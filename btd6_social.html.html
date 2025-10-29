@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>BTD6 Social Hub</title>
+<style>
+body{background:#0d0d0d;color:#fff;font-family:sans-serif;margin:0}
+header{background:#181818;padding:15px;text-align:center;font-size:1.6em}
+.container{max-width:800px;margin:auto;padding:10px}
+input,textarea{background:#222;color:#fff;border:none;border-radius:5px;padding:8px;width:100%;margin:4px 0}
+button{background:#00c853;border:none;color:#fff;border-radius:5px;padding:8px 12px;cursor:pointer}
+.post{background:#181818;padding:10px;margin:10px 0;border-radius:8px}
+.meta{font-size:.9em;color:#aaa;margin-bottom:5px}
+img.post-image{max-width:100%;border-radius:8px;margin-top:8px}
+.comment{margin-left:20px;font-size:.9em;color:#ccc}
+.comment-box{background:#222;border:none;color:#fff;padding:5px;border-radius:4px;width:90%;margin-top:5px}
+a.link-preview{color:#4fc3f7;text-decoration:none;display:block;margin-top:5px;word-break:break-all}
+#auth,#composer{background:#141414;padding:10px;margin-top:10px;border-radius:8px}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<header>🎈 BTD6 Social Hub</header>
+<div class="container">
+  <div id="auth">
+    <h3>Login / Register</h3>
+    <input id="username" placeholder="Username">
+    <input id="password" type="password" placeholder="Password">
+    <button onclick="login()">Login</button>
+    <button onclick="register()">Register</button>
+  </div>
+
+  <div id="composer" class="hidden">
+    <p>Logged in as <b id="userLabel"></b> 
+       <button onclick="logout()" style="background:#444">Logout</button></p>
+    <textarea id="text" rows="3" placeholder="Write a post..."></textarea>
+    <input id="link" placeholder="Optional link">
+    <input id="imageFile" type="file" accept="image/*">
+    <button onclick="createPost()">Post</button>
+  </div>
+
+  <div id="feed">Loading...</div>
+</div>
+
+<script>
+// --- Updated hardcoded connection ---
+const SERVER_URL = "https://mussiest-edris-osseously.ngrok-free.dev";
+const KEY = "5duM4W8HZiQBSU4v";
+const ROOM = "btd6-social";
+
+let currentUser = null;
+let ws = null;
+
+// ---------- WEBSOCKET ----------
+function connectWebSocket() {
+  const wsUrl = SERVER_URL.replace("https", "wss") + `/ws?key=${KEY}`;
+  ws = new WebSocket(wsUrl);
+  ws.onopen = () => ws.send(JSON.stringify({type:"join",room:ROOM}));
+  ws.onmessage = e => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.type === "state") loadPosts();
+    } catch {}
+  };
+  ws.onclose = () => setTimeout(connectWebSocket, 4000);
+}
+
+// ---------- API ----------
+async function getRoom() {
+  const res = await fetch(`${SERVER_URL}/room/${ROOM}?key=${KEY}`);
+  const j = await res.json();
+  if (!j.ok) return {users:{},posts:[]};
+  return j.data || {users:{},posts:[]};
+}
+
+async function saveRoomData(data) {
+  await fetch(`${SERVER_URL}/room/${ROOM}?key=${KEY}`, {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify(data)
+  });
+  if (ws && ws.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify({type:"state",payload:data}));
+}
+
+async function uploadFile(file) {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch(`${SERVER_URL}/file/${encodeURIComponent(file.name)}?key=${KEY}`, {
+    method:"POST", body:form
+  });
+  const j = await res.json();
+  return j.ok ? `${SERVER_URL}/file/${encodeURIComponent(j.filename)}?key=${KEY}` : null;
+}
+
+// ---------- AUTH ----------
+async function register() {
+  const u=username.value.trim(), p=password.value.trim();
+  if(!u||!p)return alert("Fill all fields");
+  const data=await getRoom();
+  data.users=data.users||{};
+  if(data.users[u])return alert("User exists!");
+  data.users[u]={password:p};
+  await saveRoomData(data);
+  alert("Registered! Now login.");
+}
+
+async function login() {
+  const u=username.value.trim(), p=password.value.trim();
+  const data=await getRoom();
+  if(!data.users||!data.users[u])return alert("User not found");
+  if(data.users[u].password!==p)return alert("Wrong password");
+  currentUser=u;
+  localStorage.setItem("btd6_user",u);
+  auth.classList.add("hidden");
+  composer.classList.remove("hidden");
+  userLabel.textContent=u;
+  loadPosts();
+}
+
+function logout(){
+  localStorage.removeItem("btd6_user");
+  currentUser=null;
+  auth.classList.remove("hidden");
+  composer.classList.add("hidden");
+}
+
+// ---------- POSTS ----------
+async function createPost(){
+  if(!currentUser)return alert("Login first!");
+  const text=document.getElementById("text").value.trim();
+  const link=document.getElementById("link").value.trim();
+  const file=document.getElementById("imageFile").files[0];
+  if(!text&&!link&&!file)return alert("Nothing to post!");
+  let image=null;
+  if(file)image=await uploadFile(file);
+  const data=await getRoom();
+  data.posts=data.posts||[];
+  data.posts.push({
+    id:crypto.randomUUID(),
+    author:currentUser,
+    text,link,image,
+    time:new Date().toLocaleString(),
+    likes:[],comments:[]
+  });
+  await saveRoomData(data);
+  document.getElementById("text").value="";
+  document.getElementById("link").value="";
+  document.getElementById("imageFile").value="";
+  loadPosts();
+}
+
+async function likePost(id){
+  if(!currentUser)return alert("Login first!");
+  const data=await getRoom();
+  for(const p of data.posts||[]){
+    if(p.id===id){
+      p.likes=p.likes||[];
+      const i=p.likes.indexOf(currentUser);
+      if(i>=0)p.likes.splice(i,1);else p.likes.push(currentUser);
+    }
+  }
+  await saveRoomData(data);
+}
+
+async function commentPost(id,text){
+  if(!currentUser)return alert("Login first!");
+  if(!text.trim())return;
+  const data=await getRoom();
+  for(const p of data.posts||[]){
+    if(p.id===id){
+      p.comments=p.comments||[];
+      p.comments.push({author:currentUser,text,time:new Date().toLocaleString()});
+    }
+  }
+  await saveRoomData(data);
+}
+
+// ---------- UI ----------
+async function loadPosts(){
+  const data=await getRoom();
+  const posts=data.posts||[];
+  const feed=document.getElementById("feed");
+  if(!posts.length){feed.innerHTML="<p>No posts yet.</p>";return;}
+  feed.innerHTML="";
+  for(const p of posts.slice().reverse()){
+    let comments="";
+    if(p.comments)for(const c of p.comments)
+      comments+=`<div class='comment'><b>${c.author}</b>: ${c.text}</div>`;
+    const img=p.image?`<img class='post-image' src='${p.image}'>`:"";
+    const link=p.link?`<a class='link-preview' href='${p.link}' target='_blank'>🔗 ${p.link}</a>`:"";
+    feed.innerHTML+=`
+    <div class='post'>
+      <div class='meta'><b>${p.author}</b> — ${p.time}</div>
+      <div>${p.text}</div>${img}${link}
+      <button onclick="likePost('${p.id}')">❤ ${p.likes?.length||0}</button>
+      ${comments}
+      <input class='comment-box' placeholder='Comment...' 
+        onkeydown="if(event.key==='Enter'){commentPost('${p.id}',this.value);this.value='';}">
+    </div>`;
+  }
+}
+
+// ---------- AUTO LOGIN ----------
+const saved=localStorage.getItem("btd6_user");
+if(saved){
+  currentUser=saved;
+  auth.classList.add("hidden");
+  composer.classList.remove("hidden");
+  userLabel.textContent=saved;
+}
+
+// Start everything
+connectWebSocket();
+loadPosts();
+</script>
+</body>
+</html>
