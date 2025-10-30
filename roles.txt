@@ -1,3 +1,3 @@
-owner=RICK
-admin=Someone
-mod=Player1
+Owner=RICK
+Mod=Someone
+Admin=GameIck
