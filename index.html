@@ -11,6 +11,7 @@ body {
   color: white;
   margin: 0;
   padding: 0;
+  overflow-y: scroll;
 }
 header {
   background: #2d2d2d;
@@ -19,6 +20,14 @@ header {
   font-size: 1.4em;
   color: #f6b93b;
   font-weight: bold;
+  position: sticky;
+  top: 0;
+}
+#serverStatus {
+  display: block;
+  font-size: 0.8em;
+  color: #ccc;
+  margin-top: 5px;
 }
 #statusBanner {
   background: #c0392b;
@@ -62,9 +71,7 @@ button:hover {
   cursor: pointer;
   transition: background 0.2s;
 }
-.post:hover {
-  background: #202020;
-}
+.post:hover { background: #202020; }
 .post img {
   max-width: 100%;
   border-radius: 10px;
@@ -77,10 +84,7 @@ button:hover {
   font-size: 0.9em;
   color: #ccc;
 }
-a {
-  color: #4da3ff;
-  word-break: break-all;
-}
+a { color: #4da3ff; word-break: break-all; }
 #logoutBtn {
   float: right;
   background: #e74c3c;
@@ -88,9 +92,7 @@ a {
   font-weight: bold;
   border-radius: 6px;
 }
-#logoutBtn:hover {
-  background: #ff6b6b;
-}
+#logoutBtn:hover { background: #ff6b6b; }
 #backBtn {
   margin-bottom: 10px;
   background: #666;
@@ -104,7 +106,10 @@ a {
 </style>
 </head>
 <body>
-<header>🐵 BTD6 Social</header>
+<header>
+🐵 BTD6 Social
+<span id="serverStatus">Loading tunnel...</span>
+</header>
 
 <div id="statusBanner">⚠️ Server Offline — Retrying...</div>
 
@@ -146,9 +151,10 @@ a {
 </div>
 
 <script>
+let SERVER_URL = "";
 const KEY = "5duM4W8HZiQBSU4v";
 const ROOM = "btd6-social";
-let SERVER_URL = "";
+const RETRY_INTERVAL = 5;
 let currentUser = localStorage.getItem("btd6_user") || null;
 let allPosts = [];
 let visibleCount = 0;
@@ -158,8 +164,12 @@ async function loadTunnel() {
   try {
     const t = await fetch("tunnel.txt");
     SERVER_URL = (await t.text()).trim();
+    if (SERVER_URL.startsWith("http")) {
+      document.getElementById("serverStatus").textContent = "✅ Connected to: " + SERVER_URL;
+    } else throw new Error();
   } catch {
-    alert("⚠️ Could not load tunnel.txt");
+    document.getElementById("serverStatus").textContent = "❌ Could not load tunnel.txt";
+    alert("⚠️ Could not load tunnel.txt — please ensure it exists beside this HTML file.");
   }
 }
 
@@ -168,6 +178,7 @@ function showBanner(show) {
 }
 
 async function checkServer() {
+  if (!SERVER_URL) return false;
   try {
     const res = await fetch(`${SERVER_URL}/?key=${KEY}`);
     const data = await res.json();
@@ -175,9 +186,7 @@ async function checkServer() {
       showBanner(false);
       return true;
     }
-  } catch {
-    showBanner(true);
-  }
+  } catch { showBanner(true); }
   return false;
 }
 
@@ -198,11 +207,18 @@ function logout() {
 }
 
 async function loadRoom() {
+  if (!SERVER_URL) {
+    showBanner(true);
+    return { users: {}, posts: [] };
+  }
   try {
     const res = await fetch(`${SERVER_URL}/room/${ROOM}?key=${KEY}`);
     const json = await res.json();
     if (!json.ok) throw new Error();
-    return json.data || { users: {}, posts: [] };
+    const data = json.data || {};
+    data.posts ||= [];
+    data.users ||= {};
+    return data;
   } catch {
     showBanner(true);
     return { users: {}, posts: [] };
@@ -210,6 +226,7 @@ async function loadRoom() {
 }
 
 async function saveRoom(data) {
+  if (!SERVER_URL) return;
   await fetch(`${SERVER_URL}/room/${ROOM}?key=${KEY}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -218,19 +235,25 @@ async function saveRoom(data) {
 }
 
 async function register() {
+  if (!SERVER_URL) return alert("⚠️ Server not ready yet.");
   const user = regUser.value.trim(), pass = regPass.value.trim();
   if (!user || !pass) return alert("Enter username & password");
   const data = await loadRoom();
   if (data.users[user]) return alert("Username taken");
-  data.users[user] = { password: pass };
+  data.users[user] = { password: pass, followers: [], following: [] };
   await saveRoom(data);
   alert("Registered successfully!");
   toggleLogin();
 }
 
 async function login() {
+  if (!SERVER_URL) return alert("⚠️ Server not ready yet. Wait for tunnel.txt to load.");
   const user = loginUser.value.trim(), pass = loginPass.value.trim();
   const data = await loadRoom();
+  if (!data || !data.users) {
+    alert("⚠️ Could not reach the server.");
+    return;
+  }
   if (data.users[user]?.password === pass) {
     currentUser = user;
     localStorage.setItem("btd6_user", user);
@@ -243,11 +266,11 @@ async function login() {
 }
 
 async function createPost() {
+  if (!SERVER_URL) return alert("⚠️ Server not ready yet.");
   const text = postText.value.trim();
   const link = postLink.value.trim();
   const imgFile = postImage.files[0];
   if (!text && !imgFile && !link) return alert("Cannot post empty content");
-
   const data = await loadRoom();
   let imageUrl = "";
   if (imgFile) {
@@ -257,10 +280,8 @@ async function createPost() {
       method: "POST", body: form
     });
     const upload = await res.json();
-    if (upload.ok)
-      imageUrl = `${SERVER_URL}/file/${encodeURIComponent(upload.filename)}?key=${KEY}`;
+    if (upload.ok) imageUrl = `${SERVER_URL}/file/${encodeURIComponent(upload.filename)}?key=${KEY}`;
   }
-
   data.posts.unshift({
     id: Date.now(),
     author: currentUser,
@@ -289,9 +310,12 @@ function renderNextPosts() {
   next.forEach(p => {
     const div = document.createElement("div");
     div.className = "post";
-    div.innerHTML = `<b>${p.author}</b> <small>${p.time}</small><div>${p.text}</div>
+    div.innerHTML = `
+      <b>${p.author}</b> <small>${p.time}</small>
+      <div>${p.text}</div>
       ${p.image ? `<img src="${p.image}">` : ""}
-      ${p.link ? `<div><a href="${p.link}" target="_blank">${p.link}</a></div>` : ""}`;
+      ${p.link ? `<div><a href="${p.link}" target="_blank">${p.link}</a></div>` : ""}
+    `;
     div.onclick = () => openPost(p.id);
     container.appendChild(div);
   });
@@ -301,8 +325,9 @@ function renderNextPosts() {
 }
 
 window.addEventListener("scroll", () => {
-  if (window.innerHeight + window.scrollY >= document.body.scrollHeight - 100)
+  if (window.innerHeight + window.scrollY >= document.body.scrollHeight - 100) {
     renderNextPosts();
+  }
 });
 
 async function openPost(id) {
