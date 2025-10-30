@@ -1,0 +1,403 @@
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BTD6 Social</title>
+<style>
+body {
+  font-family: "Segoe UI", sans-serif;
+  background: #121212;
+  color: white;
+  margin: 0;
+  padding: 0;
+  overflow-y: scroll;
+}
+header {
+  background: #2d2d2d;
+  padding: 10px 20px;
+  text-align: center;
+  font-size: 1.4em;
+  color: #f6b93b;
+  font-weight: bold;
+}
+#statusBanner {
+  background: #c0392b;
+  color: white;
+  text-align: center;
+  padding: 8px;
+  display: none;
+}
+#loginSection, #registerSection, #main, #postView {
+  max-width: 600px;
+  margin: 20px auto;
+  background: #1e1e1e;
+  border-radius: 10px;
+  padding: 20px;
+  box-shadow: 0 0 15px rgba(0,0,0,0.3);
+}
+input, textarea {
+  width: 100%;
+  padding: 10px;
+  margin: 5px 0;
+  border: none;
+  border-radius: 5px;
+  background: #2b2b2b;
+  color: white;
+}
+button {
+  background: #f6b93b;
+  border: none;
+  color: black;
+  font-weight: bold;
+  padding: 8px 12px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+button:hover {
+  background: #ffcd54;
+}
+.post {
+  border-bottom: 1px solid #333;
+  padding: 10px 0;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.post:hover {
+  background: #202020;
+}
+.post img {
+  max-width: 100%;
+  border-radius: 10px;
+  margin-top: 5px;
+}
+.comment {
+  margin-left: 15px;
+  border-left: 2px solid #333;
+  padding-left: 10px;
+  font-size: 0.9em;
+  color: #ccc;
+}
+a {
+  color: #4da3ff;
+  word-break: break-all;
+}
+#logoutBtn {
+  float: right;
+  background: #e74c3c;
+  color: white;
+  font-weight: bold;
+  border-radius: 6px;
+}
+#logoutBtn:hover {
+  background: #ff6b6b;
+}
+#backBtn {
+  margin-bottom: 10px;
+  background: #666;
+  color: white;
+}
+#loading {
+  text-align: center;
+  padding: 20px;
+  color: #777;
+}
+</style>
+</head>
+<body>
+<header>🐵 BTD6 Social</header>
+
+<div id="statusBanner">⚠️ Server Offline — Retrying in <span id="retryTimer">5</span>s...</div>
+
+<div id="loginSection">
+  <h3>Login</h3>
+  <input id="loginUser" placeholder="Username">
+  <input id="loginPass" type="password" placeholder="Password">
+  <button onclick="login()">Login</button>
+  <p>New here? <a href="#" onclick="toggleRegister()">Register</a></p>
+</div>
+
+<div id="registerSection" style="display:none;">
+  <h3>Register</h3>
+  <input id="regUser" placeholder="Username">
+  <input id="regPass" type="password" placeholder="Password">
+  <button onclick="register()">Register</button>
+  <p>Have an account? <a href="#" onclick="toggleLogin()">Login</a></p>
+</div>
+
+<!-- Main feed -->
+<div id="main" style="display:none;">
+  <div style="display:flex;justify-content:space-between;align-items:center;">
+    <h3>Create a Post</h3>
+    <button id="logoutBtn" onclick="logout()">Logout</button>
+  </div>
+  <textarea id="postText" placeholder="Write something..."></textarea>
+  <input type="file" id="postImage" accept="image/*">
+  <input id="postLink" placeholder="Optional link (e.g. YouTube, Reddit)">
+  <button onclick="createPost()">Post</button>
+  <h3>Recent Posts</h3>
+  <div id="posts"></div>
+  <div id="loading">Loading more posts...</div>
+</div>
+
+<!-- Post view -->
+<div id="postView" style="display:none;">
+  <button id="backBtn" onclick="closePost()">← Back</button>
+  <div id="postContent"></div>
+</div>
+
+<script>
+let SERVER_URL = "";
+const KEY = "5duM4W8HZiQBSU4v";
+const ROOM = "btd6-social";
+const RETRY_INTERVAL = 5;
+let currentUser = localStorage.getItem("btd6_user") || null;
+let allPosts = [];
+let visibleCount = 0;
+const LOAD_STEP = 5;
+
+// Load tunnel.txt
+async function loadTunnel() {
+  try {
+    const t = await fetch("tunnel.txt");
+    SERVER_URL = (await t.text()).trim();
+  } catch {
+    alert("⚠️ Could not load tunnel.txt");
+  }
+}
+
+function showBanner(show) {
+  document.getElementById("statusBanner").style.display = show ? "block" : "none";
+}
+
+async function checkServer() {
+  try {
+    const res = await fetch(`${SERVER_URL}/?key=${KEY}`);
+    const data = await res.json();
+    if (data.ok) {
+      showBanner(false);
+      return true;
+    }
+  } catch {
+    showBanner(true);
+  }
+  return false;
+}
+
+function toggleRegister() {
+  loginSection.style.display = "none";
+  registerSection.style.display = "block";
+}
+function toggleLogin() {
+  registerSection.style.display = "none";
+  loginSection.style.display = "block";
+}
+function logout() {
+  localStorage.removeItem("btd6_user");
+  currentUser = null;
+  main.style.display = "none";
+  postView.style.display = "none";
+  loginSection.style.display = "block";
+}
+
+async function loadRoom() {
+  try {
+    const res = await fetch(`${SERVER_URL}/room/${ROOM}?key=${KEY}`);
+    const json = await res.json();
+    if (!json.ok) throw new Error();
+    const data = json.data || {};
+    data.posts ||= [];
+    data.users ||= {};
+    return data;
+  } catch {
+    showBanner(true);
+    return { users: {}, posts: [] };
+  }
+}
+
+async function saveRoom(data) {
+  await fetch(`${SERVER_URL}/room/${ROOM}?key=${KEY}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data)
+  });
+}
+
+async function register() {
+  const user = regUser.value.trim(), pass = regPass.value.trim();
+  if (!user || !pass) return alert("Enter username & password");
+  const data = await loadRoom();
+  if (data.users[user]) return alert("Username taken");
+  data.users[user] = { password: pass, followers: [], following: [] };
+  await saveRoom(data);
+  alert("Registered successfully!");
+  toggleLogin();
+}
+
+async function login() {
+  const user = loginUser.value.trim(), pass = loginPass.value.trim();
+  const data = await loadRoom();
+  if (data.users[user]?.password === pass) {
+    currentUser = user;
+    localStorage.setItem("btd6_user", user);
+    loginSection.style.display = "none";
+    main.style.display = "block";
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.has("post")) {
+      openPost(urlParams.get("post"));
+    } else {
+      loadPosts(true);
+    }
+  } else alert("Invalid login");
+}
+
+async function createPost() {
+  const text = postText.value.trim();
+  const link = postLink.value.trim();
+  const imgFile = postImage.files[0];
+  if (!text && !imgFile && !link) return alert("Cannot post empty content");
+
+  const data = await loadRoom();
+  let imageUrl = "";
+  if (imgFile) {
+    const form = new FormData();
+    form.append("file", imgFile);
+    const res = await fetch(`${SERVER_URL}/file/${encodeURIComponent(imgFile.name)}?key=${KEY}`, {
+      method: "POST", body: form
+    });
+    const upload = await res.json();
+    if (upload.ok) imageUrl = `${SERVER_URL}/file/${encodeURIComponent(upload.filename)}?key=${KEY}`;
+  }
+
+  data.posts.unshift({
+    id: Date.now(),
+    author: currentUser,
+    text, link, image: imageUrl,
+    time: new Date().toLocaleString(),
+    likes: [], dislikes: [], comments: []
+  });
+  await saveRoom(data);
+  postText.value = "";
+  postLink.value = "";
+  postImage.value = "";
+  loadPosts(true);
+}
+
+async function loadPosts(reset=false) {
+  const data = await loadRoom();
+  allPosts = data.posts || [];
+  visibleCount = reset ? 0 : visibleCount;
+  renderNextPosts();
+}
+
+function renderNextPosts() {
+  const container = document.getElementById("posts");
+  const next = allPosts.slice(visibleCount, visibleCount + LOAD_STEP);
+  if (visibleCount === 0) container.innerHTML = "";
+  next.forEach(p => {
+    const div = document.createElement("div");
+    div.className = "post";
+    div.innerHTML = `
+      <b>${p.author}</b> <small>${p.time}</small>
+      <div>${p.text}</div>
+      ${p.image ? `<img src="${p.image}">` : ""}
+      ${p.link ? `<div><a href="${p.link}" target="_blank">${p.link}</a></div>` : ""}
+    `;
+    div.onclick = () => openPost(p.id);
+    container.appendChild(div);
+  });
+  visibleCount += next.length;
+  document.getElementById("loading").style.display =
+    visibleCount < allPosts.length ? "block" : "none";
+}
+
+window.addEventListener("scroll", () => {
+  if (window.innerHeight + window.scrollY >= document.body.scrollHeight - 100) {
+    renderNextPosts();
+  }
+});
+
+async function openPost(id) {
+  const data = await loadRoom();
+  const p = data.posts.find(x => x.id == id);
+  if (!p) return alert("Post not found");
+  main.style.display = "none";
+  postView.style.display = "block";
+  document.title = `${p.author} - BTD6 Social`;
+  window.history.replaceState({}, "", `?post=${id}`);
+  document.getElementById("postContent").innerHTML = `
+    <h3>${p.author}</h3>
+    <small>${p.time}</small>
+    <p>${p.text}</p>
+    ${p.image ? `<img src="${p.image}">` : ""}
+    ${p.link ? `<div><a href="${p.link}" target="_blank">${p.link}</a></div>` : ""}
+    <div style="margin-top:10px;">
+      <button onclick="likePost(${p.id},'like')">👍 ${p.likes?.length || 0}</button>
+      <button onclick="likePost(${p.id},'dislike')">👎 ${p.dislikes?.length || 0}</button>
+      <button onclick="addComment(${p.id})">💬 ${p.comments?.length || 0}</button>
+      <button onclick="sharePost(${p.id})">🔗 Share</button>
+    </div>
+    ${(p.comments||[]).map(c=>`<div class='comment'><b>${c.author}</b>: ${c.text}</div>`).join("")}
+  `;
+}
+
+function closePost() {
+  postView.style.display = "none";
+  main.style.display = "block";
+  window.history.replaceState({}, "", window.location.pathname);
+}
+
+function sharePost(id) {
+  const link = `${window.location.origin}${window.location.pathname}?post=${id}`;
+  navigator.clipboard.writeText(link);
+  alert("Post link copied!");
+}
+
+async function likePost(id, type) {
+  const data = await loadRoom();
+  const post = data.posts.find(p => p.id == id);
+  if (!post) return;
+  if (type === "like") {
+    if (post.likes.includes(currentUser)) post.likes = post.likes.filter(u => u !== currentUser);
+    else {
+      post.likes.push(currentUser);
+      post.dislikes = post.dislikes.filter(u => u !== currentUser);
+    }
+  } else {
+    if (post.dislikes.includes(currentUser)) post.dislikes = post.dislikes.filter(u => u !== currentUser);
+    else {
+      post.dislikes.push(currentUser);
+      post.likes = post.likes.filter(u => u !== currentUser);
+    }
+  }
+  await saveRoom(data);
+  openPost(id);
+}
+
+async function addComment(id) {
+  const text = prompt("Enter comment:");
+  if (!text) return;
+  const data = await loadRoom();
+  const post = data.posts.find(p => p.id == id);
+  post.comments.push({ author: currentUser, text, time: new Date().toLocaleTimeString() });
+  await saveRoom(data);
+  openPost(id);
+}
+
+window.onload = async () => {
+  await loadTunnel();
+  const ok = await checkServer();
+  if (!ok) return;
+  if (currentUser) {
+    loginSection.style.display = "none";
+    main.style.display = "block";
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.has("post")) openPost(urlParams.get("post"));
+    else loadPosts(true);
+  }
+};
+</script>
+</body>
+</html>
