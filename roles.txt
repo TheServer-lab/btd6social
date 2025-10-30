@@ -1,3 +1,4 @@
 Owner=RICK
 Mod=Someone
-Admin=GameIck
+Admin=Niko
+
