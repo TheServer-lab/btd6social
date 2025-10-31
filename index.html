@@ -54,7 +54,7 @@
 
 <div id="contentArea">Loading...</div>
 
-<!-- Auth overlay (shown when user not logged in) -->
+<!-- Auth overlay -->
 <div id="authOverlay" style="display:none">
   <div class="authCard">
     <div id="authForms">
@@ -91,16 +91,16 @@
 const KEY = "5duM4W8HZiQBSU4v";
 const ROOM = "btd6-social";
 let SERVER_URL = "";
-// Single profile storage key (profile contains username,password,bio,avatar)
 const PROFILE_KEY = "btd6_profile";
-const USERS_KEY = "btd6_users"; // maps username -> { password, avatar, bio } (stored locally)
-const LOCAL_POSTS = "btd6_localPosts"; // array
-const LOCAL_DMS = "btd6_localDMs"; // object
+const USERS_KEY = "btd6_users";
+const LOCAL_POSTS = "btd6_localPosts";
+const LOCAL_DMS = "btd6_localDMs";
 const THREADS_REFRESH_MS = 30000;
 const FEED_REFRESH_MS = 30000;
 
 /* ================== App state ================== */
 let currentUser = JSON.parse(localStorage.getItem(PROFILE_KEY) || "null") || null;
+if (currentUser && !currentUser.username) currentUser.username = "You";
 let allFeedPosts = [];
 let feedTimer = null;
 let threadTimer = null;
@@ -126,23 +126,13 @@ async function loadConfig(){
 }
 
 /* ================== Authentication UI ================== */
-function showAuthOverlay(){
-  el("#authOverlay").style.display = "flex";
-  showLogin();
-}
-function hideAuthOverlay(){
-  el("#authOverlay").style.display = "none";
-}
-function showLogin(){
-  el("#loginForm").style.display = "block";
-  el("#registerForm").style.display = "none";
-}
-function showRegister(){
-  el("#loginForm").style.display = "none";
-  el("#registerForm").style.display = "block";
-}
+function showAuthOverlay(){ el("#authOverlay").style.display = "flex"; showLogin(); }
+function hideAuthOverlay(){ el("#authOverlay").style.display = "none"; }
+function showLogin(){ el("#loginForm").style.display = "block"; el("#registerForm").style.display = "none"; }
+function showRegister(){ el("#loginForm").style.display = "none"; el("#registerForm").style.display = "block"; }
 
 function setSignedInUI(){
+  currentUser = JSON.parse(localStorage.getItem(PROFILE_KEY) || "null") || currentUser;
   if (currentUser && currentUser.username){
     el("#who").textContent = "Signed in: @" + currentUser.username;
     el("#logoutBtn").style.display = "inline-block";
@@ -158,18 +148,14 @@ function doRegister(){
   const pass = (el("#regPass").value || "").trim();
   const bio = (el("#regBio").value || "").trim();
   if (!username || !pass) return alert("Enter username and password.");
-  // load existing users
   const users = loadJSON(USERS_KEY, {});
   if (users[username]) return alert("Username taken. Choose another.");
-  // create
   users[username] = { password: pass, bio: bio || "", avatar: "" };
   saveJSON(USERS_KEY, users);
-  // set profile as current user
   currentUser = { username, password: pass, bio: bio || "", avatar: "" };
   localStorage.setItem(PROFILE_KEY, JSON.stringify(currentUser));
   setSignedInUI();
   hideAuthOverlay();
-  // refresh UI
   switchTab("feed");
   alert("Registered & signed in as @" + username);
 }
@@ -181,7 +167,6 @@ function doLogin(){
   const users = loadJSON(USERS_KEY, {});
   const u = users[username];
   if (!u || u.password !== pass) return alert("Invalid username or password.");
-  // set profile
   currentUser = { username, password: pass, bio: u.bio || "", avatar: u.avatar || "" };
   localStorage.setItem(PROFILE_KEY, JSON.stringify(currentUser));
   setSignedInUI();
@@ -195,23 +180,18 @@ function doLogout(){
   currentUser = null;
   localStorage.removeItem(PROFILE_KEY);
   setSignedInUI();
-  // show auth again
   showAuthOverlay();
 }
 
 /* ================== Initial auth check & UI wiring ================== */
 el("#logoutBtn").addEventListener("click", doLogout);
 setSignedInUI();
-
-/* If no profile present, show auth overlay on load */
 function ensureSignedIn(){
+  currentUser = JSON.parse(localStorage.getItem(PROFILE_KEY) || "null") || currentUser;
   if (!currentUser || !currentUser.username){
-    showAuthOverlay();
-    return false;
+    showAuthOverlay(); setSignedInUI(); return false;
   }
-  hideAuthOverlay();
-  setSignedInUI();
-  return true;
+  hideAuthOverlay(); setSignedInUI(); return true;
 }
 
 /* ================== Tab navigation wiring ================== */
@@ -224,7 +204,7 @@ qAll("#navTabs button").forEach(btn => {
   });
 });
 
-/* ================== FEED logic (local + btd6-social.json) ================== */
+/* ================== FEED logic ================== */
 async function loadFeed(){
   if (!ensureSignedIn()) return;
   clearInterval(feedTimer);
@@ -235,18 +215,11 @@ async function loadFeed(){
 async function refreshFeed(){
   const area = el("#contentArea");
   area.innerHTML = `<div class="feedPost"><div class="small">Loading feed...</div></div>`;
-  // load static JSON
   let serverPosts = [];
   try {
     const res = await fetch("btd6-social.json");
-    if (res.ok) {
-      const j = await res.json();
-      serverPosts = j.posts || [];
-    }
-  } catch(e) {
-    console.warn("Could not load btd6-social.json", e);
-  }
-  // local posts
+    if (res.ok) { const j = await res.json(); serverPosts = j.posts || []; }
+  } catch(e) { console.warn("Could not load btd6-social.json", e); }
   const local = loadJSON(LOCAL_POSTS, []);
   allFeedPosts = [...local, ...serverPosts];
   renderFeed();
@@ -255,8 +228,7 @@ async function refreshFeed(){
 function renderFeed(){
   const area = el("#contentArea");
   area.innerHTML = "";
-  // create post box
-  const box = document.createElement("div"); box.className = "feedPost";
+  const box = document.createElement("div"); box.className="feedPost";
   box.innerHTML = `
     <h3>Create a Post</h3>
     <textarea id="newPostText" placeholder="What's on your mind?" style="height:70px"></textarea>
@@ -266,17 +238,18 @@ function renderFeed(){
   `;
   area.appendChild(box);
 
-  // posts newest first
   allFeedPosts.sort((a,b)=>b.id - a.id);
   for (const p of allFeedPosts){
     const postEl = document.createElement("div"); postEl.className = "feedPost";
-    let html = `<h4><a href="#" onclick="openProfile('${escapeHtml(p.author)}');return false">@${escapeHtml(p.author)}</a></h4>`;
+    // Title is clickable and opens the standalone post view
+    let html = `<h4><a href="#" onclick="openPost(${p.id});return false">@${escapeHtml(p.author)}</a></h4>`;
     if (p.text) html += `<p>${escapeHtml(p.text)}</p>`;
-    html += `<div class="small">${escapeHtml(p.time||"")}</div>`;
+    html += `<div class="small">${escapeHtml(p.time || "")}</div>`;
     postEl.innerHTML = html;
+
     if (p.image){
       const img = document.createElement("img"); img.src = p.image; img.alt = "";
-      img.onerror = ()=>{ /* silent */ };
+      img.onerror = ()=>{ /* ignore broken image */ };
       postEl.appendChild(img);
     }
     if (p.link){
@@ -284,26 +257,29 @@ function renderFeed(){
       linkWrap.innerHTML = `<p><a href="${escapeAttr(p.link)}" target="_blank">${escapeHtml(p.link)}</a></p>`;
       postEl.appendChild(linkWrap);
     }
-    // actions
+
+    // action buttons: use event listeners so clicks don't cause navigation
     const actions = document.createElement("div"); actions.style.marginTop = "8px";
-    const likeCount = (p.likes||[]).length, dislikeCount = (p.dislikes||[]).length, commentCount = (p.comments||[]).length;
-    const likeBtn = document.createElement("button"); likeBtn.className="action"; likeBtn.textContent = `👍 ${likeCount}`;
-    likeBtn.onclick = ()=> toggleLike(p.id,'like');
-    const disBtn = document.createElement("button"); disBtn.className="action"; disBtn.textContent = `👎 ${dislikeCount}`;
-    disBtn.onclick = ()=> toggleLike(p.id,'dislike');
-    const comBtn = document.createElement("button"); comBtn.className="action"; comBtn.textContent = `💬 ${commentCount}`;
-    comBtn.onclick = ()=> promptComment(p.id);
+    const likeBtn = document.createElement("button"); likeBtn.className="action"; likeBtn.textContent = `👍 ${ (p.likes||[]).length }`;
+    likeBtn.addEventListener("click", (e)=>{ e.stopPropagation(); toggleLike(p.id,'like'); });
+    const disBtn = document.createElement("button"); disBtn.className="action"; disBtn.textContent = `👎 ${ (p.dislikes||[]).length }`;
+    disBtn.addEventListener("click", (e)=>{ e.stopPropagation(); toggleLike(p.id,'dislike'); });
+    const comBtn = document.createElement("button"); comBtn.className="action"; comBtn.textContent = `💬 ${ (p.comments||[]).length }`;
+    comBtn.addEventListener("click", (e)=>{ e.stopPropagation(); promptComment(p.id); });
     const shareBtn = document.createElement("button"); shareBtn.className="action"; shareBtn.textContent = "🔗 Share";
-    shareBtn.onclick = ()=> sharePost(p.id);
+    shareBtn.addEventListener("click", (e)=>{ e.stopPropagation(); sharePost(p.id); });
     actions.appendChild(likeBtn); actions.appendChild(disBtn); actions.appendChild(comBtn); actions.appendChild(shareBtn);
-    if (p.author === (currentUser.username || "You")){
+
+    if (p.author === (currentUser && currentUser.username ? currentUser.username : "You")){
       const del = document.createElement("button"); del.className="danger"; del.textContent="🗑 Delete";
-      del.onclick = ()=> deletePost(p.id);
+      del.addEventListener("click", (e)=>{ e.stopPropagation(); deletePost(p.id); });
       actions.appendChild(del);
     }
     postEl.appendChild(actions);
-    // comments
-    const cmWrap = document.createElement("div"); cmWrap.style.marginTop="6px"; cmWrap.style.borderTop="1px solid #333"; cmWrap.style.paddingTop="6px";
+
+    // comments inline
+    const cmWrap = document.createElement("div");
+    cmWrap.style.marginTop = "6px"; cmWrap.style.borderTop = "1px solid #333"; cmWrap.style.paddingTop = "6px";
     if (p.comments && p.comments.length){
       p.comments.forEach(c=>{
         const cd = document.createElement("div"); cd.className="small"; cd.style.marginLeft="8px";
@@ -312,71 +288,113 @@ function renderFeed(){
       });
     }
     postEl.appendChild(cmWrap);
+
+    // Make the whole post clickable to open the same post (but title already does that).
+    postEl.addEventListener("dblclick", ()=> openPost(p.id)); // double-click as alternative
+
     area.appendChild(postEl);
   }
 }
 
+/* Open a standalone post view and update URL ?post=<id> */
+function openPost(id){
+  const p = allFeedPosts.find(x=>x.id === id);
+  if (!p) return alert("Post not found");
+  const area = el("#contentArea");
+  history.replaceState({}, "", window.location.pathname + "?post=" + id);
+  area.innerHTML = "";
+  const postEl = document.createElement("div"); postEl.className = "feedPost";
+  let html = `<h3>@${escapeHtml(p.author)}</h3>`;
+  if (p.text) html += `<p>${escapeHtml(p.text)}</p>`;
+  html += `<div class="small">${escapeHtml(p.time || "")}</div>`;
+  postEl.innerHTML = html;
+  if (p.image){
+    const img = document.createElement("img"); img.src = p.image; img.alt = "";
+    postEl.appendChild(img);
+  }
+  if (p.link){
+    const linkWrap = document.createElement("div");
+    linkWrap.innerHTML = `<p><a href="${escapeAttr(p.link)}" target="_blank">${escapeHtml(p.link)}</a></p>`;
+    postEl.appendChild(linkWrap);
+  }
+  // action buttons
+  const actions = document.createElement("div"); actions.style.marginTop = "8px";
+  const likeBtn = document.createElement("button"); likeBtn.className="action"; likeBtn.textContent = `👍 ${ (p.likes||[]).length }`;
+  likeBtn.addEventListener("click", ()=> toggleLike(p.id,'like'));
+  const disBtn = document.createElement("button"); disBtn.className="action"; disBtn.textContent = `👎 ${ (p.dislikes||[]).length }`;
+  disBtn.addEventListener("click", ()=> toggleLike(p.id,'dislike'));
+  const comBtn = document.createElement("button"); comBtn.className="action"; comBtn.textContent = `💬 ${ (p.comments||[]).length }`;
+  comBtn.addEventListener("click", ()=> promptComment(p.id));
+  const shareBtn = document.createElement("button"); shareBtn.className="action"; shareBtn.textContent = "🔗 Share";
+  shareBtn.addEventListener("click", ()=> sharePost(p.id));
+  const backBtn = document.createElement("button"); backBtn.className="smallBtn"; backBtn.textContent = "← Back";
+  backBtn.addEventListener("click", ()=> { history.replaceState({}, "", window.location.pathname); renderFeed(); });
+
+  actions.appendChild(backBtn); actions.appendChild(likeBtn); actions.appendChild(disBtn); actions.appendChild(comBtn); actions.appendChild(shareBtn);
+
+  if (p.author === (currentUser && currentUser.username ? currentUser.username : "You")){
+    const del = document.createElement("button"); del.className="danger"; del.textContent="🗑 Delete";
+    del.addEventListener("click", ()=> { if(confirm("Delete this post?")){ deletePost(p.id); history.replaceState({}, "", window.location.pathname); refreshFeed(); }});
+    actions.appendChild(del);
+  }
+
+  postEl.appendChild(actions);
+
+  // comments area (editable)
+  const commentsWrap = document.createElement("div");
+  commentsWrap.style.marginTop = "10px";
+  commentsWrap.innerHTML = `<h4>Comments</h4>`;
+  if (p.comments && p.comments.length){
+    p.comments.forEach(c=>{
+      const cd = document.createElement("div"); cd.className="small"; cd.style.marginBottom="6px";
+      cd.innerHTML = `<b>${escapeHtml(c.author)}</b>: ${escapeHtml(c.text)} <span class="small">(${escapeHtml(c.time||"")})</span>`;
+      commentsWrap.appendChild(cd);
+    });
+  } else {
+    const note = document.createElement("div"); note.className="small"; note.textContent = "No comments yet.";
+    commentsWrap.appendChild(note);
+  }
+  // add comment input
+  const commentBox = document.createElement("div"); commentBox.style.marginTop="8px";
+  commentBox.innerHTML = `<input id="singlePostComment" placeholder="Write a comment..." style="width:70%"><button class="action" id="singlePostCommentBtn">Post</button>`;
+  commentBox.querySelector("#singlePostCommentBtn").addEventListener("click", ()=> {
+    const txt = commentBox.querySelector("#singlePostComment").value.trim();
+    if (!txt) return alert("Write a comment");
+    p.comments = p.comments || [];
+    p.comments.push({ author: currentUser.username || "You", text: txt, time: new Date().toLocaleTimeString() });
+    // update local storage if local
+    const local = loadJSON(LOCAL_POSTS, []);
+    const idx = local.findIndex(x=>x.id===p.id);
+    if (idx >= 0){ local[idx] = p; saveJSON(LOCAL_POSTS, local); }
+    openPost(p.id); // re-open to refresh view
+  });
+  postEl.appendChild(commentsWrap);
+  postEl.appendChild(commentBox);
+
+  area.appendChild(postEl);
+}
+
+/* ================== Create/post helpers used in feed ================== */
 async function handleCreatePost(){
+  if (!ensureSignedIn()) return;
   const text = el("#newPostText").value.trim();
   const link = el("#newPostLink").value.trim();
   const file = el("#newPostImage").files[0];
   if (!text && !link && !file) return alert("Write or attach something first.");
   const post = { id: Date.now(), author: currentUser.username || "You", text, link, image: "", time: new Date().toLocaleString(), likes: [], dislikes: [], comments: [] };
-  if (file){
-    post.image = await fileToDataURL(file); // store as data URL to avoid broken images on restart
-  }
-  // save locally
+  if (file) post.image = await fileToDataURL(file);
   const local = loadJSON(LOCAL_POSTS, []);
   local.push(post); saveJSON(LOCAL_POSTS, local);
   await refreshFeed();
   el("#newPostText").value=""; el("#newPostLink").value=""; el("#newPostImage").value="";
 }
-function fileToDataURL(file){
-  return new Promise((res,rej)=>{
-    const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file);
-  });
-}
-function toggleLike(id,type){
-  const me = currentUser.username || "You";
-  const p = allFeedPosts.find(x=>x.id===id);
-  if (!p) return;
-  p.likes = p.likes || []; p.dislikes = p.dislikes || [];
-  if (type==="like"){
-    if (p.likes.includes(me)) p.likes = p.likes.filter(u=>u!==me);
-    else { p.likes.push(me); p.dislikes = p.dislikes.filter(u=>u!==me); }
-  } else {
-    if (p.dislikes.includes(me)) p.dislikes = p.dislikes.filter(u=>u!==me);
-    else { p.dislikes.push(me); p.likes = p.likes.filter(u=>u!==me); }
-  }
-  // update local posts storage if needed
-  const local = loadJSON(LOCAL_POSTS, []);
-  const idx = local.findIndex(x=>x.id===p.id);
-  if (idx >= 0){ local[idx] = p; saveJSON(LOCAL_POSTS, local); }
-  renderFeed();
-}
-function promptComment(id){
-  const t = prompt("Enter comment:"); if (!t) return;
-  const p = allFeedPosts.find(x=>x.id===id); if (!p) return;
-  p.comments = p.comments || []; p.comments.push({ author: currentUser.username || "You", text: t, time: new Date().toLocaleTimeString() });
-  const local = loadJSON(LOCAL_POSTS, []);
-  const idx = local.findIndex(x=>x.id===p.id);
-  if (idx >= 0){ local[idx] = p; saveJSON(LOCAL_POSTS, local); }
-  renderFeed();
-}
-function deletePost(id){
-  if (!confirm("Delete this post?")) return;
-  let local = loadJSON(LOCAL_POSTS, []);
-  local = local.filter(p=>p.id !== id);
-  saveJSON(LOCAL_POSTS, local);
-  allFeedPosts = allFeedPosts.filter(p=>p.id !== id);
-  renderFeed();
-}
-function sharePost(id){
-  const url = window.location.origin + window.location.pathname + "?post=" + id;
-  navigator.clipboard.writeText(url).then(()=> alert("Link copied!"), ()=> alert("Could not copy link."));
-}
+function fileToDataURL(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); }); }
+function toggleLike(id,type){ const me = currentUser && currentUser.username ? currentUser.username : "You"; const p = allFeedPosts.find(x=>x.id===id); if(!p) return; p.likes = p.likes || []; p.dislikes = p.dislikes || []; if(type==="like"){ if(p.likes.includes(me)) p.likes = p.likes.filter(u=>u!==me); else { p.likes.push(me); p.dislikes = p.dislikes.filter(u=>u!==me);} } else { if(p.dislikes.includes(me)) p.dislikes = p.dislikes.filter(u=>u!==me); else { p.dislikes.push(me); p.likes = p.likes.filter(u=>u!==me);} } const local = loadJSON(LOCAL_POSTS, []); const idx = local.findIndex(x=>x.id===p.id); if (idx >= 0){ local[idx] = p; saveJSON(LOCAL_POSTS, local); } renderFeed(); }
+function promptComment(id){ const t = prompt("Enter comment:"); if(!t) return; const p = allFeedPosts.find(x=>x.id===id); if(!p) return; p.comments = p.comments || []; p.comments.push({ author: currentUser.username || "You", text: t, time: new Date().toLocaleTimeString() }); const local = loadJSON(LOCAL_POSTS, []); const idx = local.findIndex(x=>x.id===p.id); if (idx >= 0){ local[idx] = p; saveJSON(LOCAL_POSTS, local); } renderFeed(); }
+function deletePost(id){ if (!confirm("Delete this post?")) return; let local = loadJSON(LOCAL_POSTS, []); local = local.filter(p=>p.id !== id); saveJSON(LOCAL_POSTS, local); allFeedPosts = allFeedPosts.filter(p=>p.id !== id); renderFeed(); }
+function sharePost(id){ const url = window.location.origin + window.location.pathname + "?post=" + id; navigator.clipboard.writeText(url).then(()=> alert("Link copied!"), ()=> alert("Could not copy link.")); }
 
-/* ================== THREADS (server-synced via /room/<ROOM>) ================== */
+/* ================= THREADS (server-synced via /room/<ROOM>) ================= */
 async function loadThreads(){
   if (!ensureSignedIn()) return;
   clearInterval(threadTimer);
@@ -410,14 +428,12 @@ function renderThreads(threads){
   threads.sort((a,b)=>b.id - a.id);
   threads.forEach(t=>{
     const d = document.createElement("div"); d.className = "feedPost";
-    let inner = `<h4>${escapeHtml(t.title)}</h4><div class="small">by ${escapeHtml(t.author)}${t.time ? " • "+escapeHtml(t.time) : ""}</div>`;
+    let inner = `<h4>${escapeHtml(t.title)}</h4><div class="small">by ${escapeHtml(t.author)}${t.time ? " • " + escapeHtml(t.time) : ""}</div>`;
     if (t.text) inner += `<p>${escapeHtml(t.text)}</p>`;
     inner += `<div style="margin-top:8px"><button class="action" onclick="replyThread(${t.id})">💬 ${ (t.replies||[]).length }</button></div>`;
     if (t.replies && t.replies.length){
       inner += `<div style="margin-top:8px;border-top:1px solid #333;padding-top:6px">`;
-      t.replies.forEach(r=>{
-        inner += `<div style="margin-left:8px" class="small"><b>${escapeHtml(r.author)}</b>: ${escapeHtml(r.text)}</div>`;
-      });
+      t.replies.forEach(r=>{ inner += `<div style="margin-left:8px" class="small"><b>${escapeHtml(r.author)}</b>: ${escapeHtml(r.text)}</div>`; });
       inner += `</div>`;
     }
     d.innerHTML = inner;
@@ -447,10 +463,10 @@ async function replyThread(id){
     const json = await res.json();
     const data = json.data || {};
     data.threads ||= [];
-    const t = data.threads.find(x=>x.id===id);
-    if (!t) return alert("Thread not found on server.");
-    t.replies ||= [];
-    t.replies.push({ author: currentUser.username || "You", text: txt, time: new Date().toLocaleTimeString() });
+    const thread = data.threads.find(t => t.id === id);
+    if (!thread) return alert("Thread not found on server.");
+    thread.replies ||= [];
+    thread.replies.push({ author: currentUser.username || "You", text: txt, time: new Date().toLocaleTimeString() });
     await fetch(`${SERVER_URL}/room/${ROOM}?key=${KEY}`, { method: "POST", headers: { "Content-Type":"application/json" }, body: JSON.stringify(data) });
     await refreshThreads();
   } catch(e){ alert("Could not reply (server error)."); console.error(e); }
@@ -519,7 +535,6 @@ function saveProfile(){
   currentUser.username = el("#profileName").value.trim() || "You";
   currentUser.password = el("#profilePass").value;
   currentUser.bio = el("#profileBio").value.trim();
-  // Save both profile and global users map
   saveJSON(PROFILE_KEY, currentUser);
   const users = loadJSON(USERS_KEY, {});
   users[currentUser.username] = users[currentUser.username] || {};
@@ -530,8 +545,6 @@ function saveProfile(){
   alert("Profile saved.");
   setSignedInUI();
 }
-
-/* open other user's profile (read-only, shows their posts) */
 function openProfile(username){
   const posts = allFeedPosts.filter(p => p.author === username);
   let html = `<div class="feedPost" style="text-align:center"><h3>@${escapeHtml(username)}</h3><p class="small">User profile</p><button onclick="switchTab('feed')">← Back</button></div>`;
@@ -545,7 +558,7 @@ function makeMiniPostHTML(p){
   return div.outerHTML;
 }
 
-/* ================== Helpers & Nav ================== */
+/* ================== Nav & helpers ================== */
 function switchTab(tab){
   if (!ensureSignedIn()) return;
   qAll("#navTabs button").forEach(b => b.classList.remove("active"));
@@ -556,77 +569,46 @@ function switchTab(tab){
   else if (tab === "messages") loadDMList();
   else if (tab === "profile") loadProfile();
 }
-
 function escapeHtml(s){ if (s===undefined || s===null) return ""; return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c]); }
 function escapeAttr(s){ return String(s).replace(/"/g,'&quot;'); }
 
-/* ensure user signed in */
-function ensureSignedIn(){
-  currentUser = JSON.parse(localStorage.getItem(PROFILE_KEY) || "null") || currentUser;
-  if (!currentUser || !currentUser.username){
-    showAuthOverlay();
-    setSignedInUI();
-    return false;
-  }
-  hideAuthOverlay();
-  setSignedInUI();
-  return true;
-}
-
-/* show/hide auth overlay helper */
-function showAuthOverlay(){
-  el("#authOverlay").style.display = "flex";
-  showLogin();
-}
-function hideAuthOverlay(){ el("#authOverlay").style.display = "none"; }
-
-/* set user text & logout visibility */
-function setSignedInUI(){
-  currentUser = JSON.parse(localStorage.getItem(PROFILE_KEY) || "null") || currentUser;
-  if (currentUser && currentUser.username){
-    el("#who").textContent = "Signed in: @" + currentUser.username;
-    el("#logoutBtn").style.display = "inline-block";
-  } else {
-    el("#who").textContent = "Not signed in";
-    el("#logoutBtn").style.display = "none";
-  }
-}
-
-/* logout handler */
-el("#logoutBtn").addEventListener("click", ()=>{
-  if (!confirm("Log out?")) return;
-  currentUser = null;
-  localStorage.removeItem(PROFILE_KEY);
-  setSignedInUI();
-  showAuthOverlay();
-});
-
-/* ================== Utility exposure for some inline onclicks ================== */
-window.openProfile = openProfile;
-window.replyThread = replyThread;
-window.refreshThreads = refreshThreads;
-window.refreshFeed = refreshFeed;
-
-/* ================== Start up ================== */
+/* ================== Init ================== */
 (async function init(){
   await loadConfig();
-  // If no profile in storage, show auth overlay
-  currentUser = JSON.parse(localStorage.getItem(PROFILE_KEY) || "null") || null;
+  // initial auth
+  currentUser = JSON.parse(localStorage.getItem(PROFILE_KEY) || "null") || currentUser;
   setSignedInUI();
   if (!currentUser || !currentUser.username) {
     showAuthOverlay();
   } else {
-    // ensure users map contains this user (sync)
+    // ensure user saved in users map
     const users = loadJSON(USERS_KEY, {});
     users[currentUser.username] = users[currentUser.username] || {};
     users[currentUser.username].password = currentUser.password || users[currentUser.username].password || "";
     users[currentUser.username].bio = currentUser.bio || users[currentUser.username].bio || "";
     users[currentUser.username].avatar = currentUser.avatar || users[currentUser.username].avatar || "";
     saveJSON(USERS_KEY, users);
-    switchTab("feed");
+    // if ?post=ID present, open that post; else open feed
+    const params = new URLSearchParams(window.location.search);
+    if (params.has("post")) {
+      // load feed data first, then open the post
+      await refreshFeed();
+      const pid = Number(params.get("post"));
+      if (!isNaN(pid)) openPost(pid);
+      else loadFeed();
+    } else {
+      switchTab("feed");
+    }
   }
 })();
-</script>
 
+/* expose some functions for inline handlers & console */
+window.openProfile = openProfile;
+window.replyThread = replyThread;
+window.refreshThreads = refreshThreads;
+window.refreshFeed = refreshFeed;
+window.openPost = openPost;
+
+</script>
 </body>
 </html>
