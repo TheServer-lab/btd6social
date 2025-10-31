@@ -124,9 +124,11 @@ async function loadConfig(){
       SERVER_URL = (await r.text()).trim();
       if (SERVER_URL.endsWith("/")) SERVER_URL = SERVER_URL.slice(0, -1);
       console.log("SERVER_URL =", SERVER_URL);
+    } else {
+      console.warn("tunnel.txt not found or not ok");
     }
   } catch (e) {
-    console.warn("tunnel.txt not found or failed to load.");
+    console.warn("tunnel.txt not found or failed to load:", e);
   }
 }
 
@@ -137,37 +139,77 @@ async function serverFetchRoom(){
   if (!SERVER_URL) throw new Error("SERVER_URL not configured");
 
   const url = `${SERVER_URL}/room/${ROOM}?key=${KEY}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("server fetch failed");
+  let res;
+  try {
+    res = await fetch(url, { cache: "no-store" });
+  } catch (e) {
+    console.error("Fetch failed:", e);
+    throw new Error("Server unreachable");
+  }
 
-  const json = await res.json();
+  if (!res.ok) throw new Error(`Server fetch failed: ${res.status}`);
+
+  let json;
+  try {
+    json = await res.json();
+  } catch (e) {
+    console.error("Invalid JSON from server:", e);
+    json = {};
+  }
+
+  // Normalize format
   if (json.ok && json.data) {
     if (!json.data.server_storage) json.data.server_storage = {};
     return json.data;
+  } else if (json.data) {
+    if (!json.data.server_storage) json.data.server_storage = {};
+    return json.data;
+  } else if (json.server_storage) {
+    return json;
   }
-  // fallback wrapper
-  return { server_storage: (json.server_storage || {}) };
+
+  return { server_storage: {} };
 }
 
-/* Save to backend (same /room endpoint) */
+/* Save to backend (same /room endpoint, sends {data: ...}) */
 async function serverSaveRoom(data){
   if (!SERVER_URL) throw new Error("SERVER_URL not configured");
 
-  const wrapped = { ok: true, data };
-  const res = await fetch(`${SERVER_URL}/room/${ROOM}?key=${KEY}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(wrapped)
-  });
+  const url = `${SERVER_URL}/room/${ROOM}?key=${KEY}`;
+  const payload = { data };
 
-  if (!res.ok) throw new Error("server save failed");
-  try { return await res.json(); } catch { return { ok: true }; }
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+  } catch (e) {
+    console.error("POST to server failed:", e);
+    throw new Error("Failed to send data to server");
+  }
+
+  if (!res.ok) {
+    const txt = await res.text().catch(()=>"?");
+    console.warn("Server returned non-OK:", txt);
+    throw new Error("Server save failed");
+  }
+
+  try {
+    const j = await res.json();
+    if (j && (j.ok || j.data)) return true;
+  } catch (e) {
+    console.warn("Non-JSON response, assuming success:", e);
+  }
+
+  return true;
 }
 
 /* Read a key (simulated from /server_data) */
 async function loadServerKey(keyName){
   const data = await serverFetchRoom();
-  return (data.server_storage && data.server_storage[keyName]) 
+  return (data.server_storage && data.server_storage[keyName])
     ? data.server_storage[keyName]
     : null;
 }
@@ -180,6 +222,7 @@ async function saveServerKey(keyName, value){
   await serverSaveRoom(data);
   return true;
 }
+
 
 /* ============ Auth UI & logic ============ */
 function showAuthOverlay(){ el("#authOverlay").style.display = "flex"; showLogin(); }
