@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>🐵 BTD6 Social</title>
+<title>🐵 BTD6 Social — Server-stored profiles/posts</title>
 <style>
   :root { --bg:#121212; --card:#1a1a1a; --accent:#f6b93b; --muted:#999; }
   body{font-family:"Segoe UI",Arial,sans-serif;background:var(--bg);color:#fff;margin:0}
@@ -14,8 +14,11 @@
   #navTabs button{background:none;border:none;color:var(--accent);font-weight:700;cursor:pointer;padding:6px 12px;border-radius:6px}
   #navTabs button.active{background:#2a2e50;color:#fff}
   #contentArea{max-width:900px;margin:18px auto;padding:14px;border-radius:10px;background:var(--card);box-shadow:0 8px 30px rgba(0,0,0,0.5)}
-  .feedPost{background:#161618;border-radius:8px;padding:12px;margin-bottom:14px}
-  .feedPost img{max-width:100%;border-radius:8px;margin-top:8px}
+  .feedPost{background:#161618;border-radius:8px;padding:12px;margin-bottom:14px;display:block}
+  .postHeader{display:flex;align-items:center;gap:12px;margin-bottom:6px}
+  .avatar{width:44px;height:44px;border-radius:50%;object-fit:cover;border:2px solid #222;flex:0 0 44px}
+  .authorName{font-weight:700;color:#f6b93b}
+  .feedPost img.media{max-width:100%;border-radius:8px;margin-top:8px}
   .small{color:var(--muted);font-size:0.9em}
   button.action{background:var(--accent);border:none;padding:6px 10px;border-radius:6px;cursor:pointer;margin-right:6px;color:#000;font-weight:700}
   button.danger{background:#e74c3c;color:#fff}
@@ -28,10 +31,11 @@
   .authCard h3{margin:0 0 10px 0;color:var(--accent)}
   .authRow{margin-bottom:8px}
   .linkish{color:#4da3ff;cursor:pointer;text-decoration:underline;font-size:0.95em}
-  /* responsive */
   @media (max-width:880px){
     #contentArea{margin:12px}
     .authCard{width:92%}
+    .postHeader{gap:8px}
+    .avatar{width:36px;height:36px;flex:0 0 36px}
   }
 </style>
 </head>
@@ -80,38 +84,42 @@
           <button class="action" onclick="doRegister()">Register</button>
           <button class="smallBtn" onclick="showLogin()">Back</button>
         </div>
-        <p class="small" style="margin-top:10px">By registering you store this account locally in your browser.</p>
+        <p class="small" style="margin-top:10px">By registering you store this account on the server_data of the room.</p>
       </div>
     </div>
   </div>
 </div>
 
 <script>
-/* ================== Keys & storage ================== */
+/* ================== Configuration ================== */
+/* SERVER: tunnel.txt must contain base URL like "https://example.com" (no trailing slash) */
+let SERVER_URL = "";
 const KEY = "5duM4W8HZiQBSU4v";
 const ROOM = "btd6-social";
-let SERVER_URL = "";
+
+/* Storage keys (same names as you requested) */
 const PROFILE_KEY = "btd6_profile";
 const USERS_KEY = "btd6_users";
 const LOCAL_POSTS = "btd6_localPosts";
-const LOCAL_DMS = "btd6_localDMs";
-const THREADS_REFRESH_MS = 30000;
-const FEED_REFRESH_MS = 30000;
+const LOCAL_DMS = "btd6_localDMs"; // stays local
 
-/* ================== App state ================== */
-let currentUser = JSON.parse(localStorage.getItem(PROFILE_KEY) || "null") || null;
-if (currentUser && !currentUser.username) currentUser.username = "You";
-let allFeedPosts = [];
-let feedTimer = null;
-let threadTimer = null;
+/* App state */
+let currentUser = null; // will be object { username, password, bio, avatar }
+let usersMap = {};      // map username -> { password, bio, avatar }
+let allFeedPosts = [];  // merged posts (server static JSON + local posts)
+let localPosts = [];    // posts we control (will be stored server-side under LOCAL_POSTS)
 
-/* ================== DOM helpers ================== */
+/* DOM helpers */
 const el = s => document.querySelector(s);
 const qAll = s => Array.from(document.querySelectorAll(s));
-const saveJSON = (k,v) => localStorage.setItem(k, JSON.stringify(v));
-const loadJSON = (k, fallback) => { try { return JSON.parse(localStorage.getItem(k)||"null") || fallback } catch(e) { return fallback } };
+const saveLocal = (k,v) => localStorage.setItem(k, JSON.stringify(v));
+const loadLocal = (k, fallback) => { try { return JSON.parse(localStorage.getItem(k)||"null") || fallback } catch(e){ return fallback } };
 
-/* ================== Config loader (tunnel.txt) ================== */
+/* Escape helpers */
+function escapeHtml(s){ if (s===undefined || s===null) return ""; return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c]); }
+function escapeAttr(s){ return String(s).replace(/"/g,'&quot;'); }
+
+/* ================== Server room helpers ================== */
 async function loadConfig(){
   try {
     const r = await fetch("tunnel.txt");
@@ -125,14 +133,62 @@ async function loadConfig(){
   }
 }
 
-/* ================== Authentication UI ================== */
+/* fetch the full room JSON data (returns data object or throws) */
+async function serverFetchRoom(){
+  if (!SERVER_URL) throw new Error("SERVER_URL not configured");
+  const res = await fetch(`${SERVER_URL}/room/${ROOM}?key=${KEY}`);
+  if (!res.ok) throw new Error("server fetch failed");
+  const json = await res.json();
+  if (!json.ok) throw new Error("server returned not ok");
+  return json.data || {};
+}
+
+/* save the whole room JSON (server expects full data for this endpoint) */
+async function serverSaveRoom(data){
+  if (!SERVER_URL) throw new Error("SERVER_URL not configured");
+  const res = await fetch(`${SERVER_URL}/room/${ROOM}?key=${KEY}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data)
+  });
+  if (!res.ok) throw new Error("server save failed");
+  // Attempt to parse response but not required
+  try { return await res.json(); } catch(e){ return null; }
+}
+
+/* read a key from data.server_storage */
+async function loadServerKey(keyName){
+  try {
+    const data = await serverFetchRoom();
+    return (data.server_storage && data.server_storage[keyName]) ? data.server_storage[keyName] : null;
+  } catch (e) {
+    console.warn("loadServerKey failed:", keyName, e);
+    return null;
+  }
+}
+
+/* save a key into data.server_storage (fetch current room, patch server_storage, post) */
+async function saveServerKey(keyName, value){
+  try {
+    const data = await serverFetchRoom();
+    data.server_storage = data.server_storage || {};
+    data.server_storage[keyName] = value;
+    await serverSaveRoom(data);
+    return true;
+  } catch (e) {
+    console.warn("saveServerKey failed:", keyName, e);
+    return false;
+  }
+}
+
+/* ========== Auth UI and logic ========== */
 function showAuthOverlay(){ el("#authOverlay").style.display = "flex"; showLogin(); }
 function hideAuthOverlay(){ el("#authOverlay").style.display = "none"; }
 function showLogin(){ el("#loginForm").style.display = "block"; el("#registerForm").style.display = "none"; }
 function showRegister(){ el("#loginForm").style.display = "none"; el("#registerForm").style.display = "block"; }
 
 function setSignedInUI(){
-  currentUser = JSON.parse(localStorage.getItem(PROFILE_KEY) || "null") || currentUser;
+  currentUser = currentUser || loadLocal(PROFILE_KEY, null);
   if (currentUser && currentUser.username){
     el("#who").textContent = "Signed in: @" + currentUser.username;
     el("#logoutBtn").style.display = "inline-block";
@@ -142,33 +198,67 @@ function setSignedInUI(){
   }
 }
 
-/* === Login/Register logic (local-only, safe) === */
-function doRegister(){
+/* Register: update usersMap and save to server and local */
+async function doRegister(){
   const username = (el("#regUser").value || "").trim();
   const pass = (el("#regPass").value || "").trim();
   const bio = (el("#regBio").value || "").trim();
   if (!username || !pass) return alert("Enter username and password.");
-  const users = loadJSON(USERS_KEY, {});
-  if (users[username]) return alert("Username taken. Choose another.");
-  users[username] = { password: pass, bio: bio || "", avatar: "" };
-  saveJSON(USERS_KEY, users);
+  // ensure usersMap loaded
+  usersMap = usersMap || loadLocal(USERS_KEY, {});
+  if (usersMap[username]) return alert("Username taken. Choose another.");
+  usersMap[username] = { password: pass, bio: bio || "", avatar: "" };
+  // Save to server
+  const ok = await saveServerKey(USERS_KEY, usersMap);
+  if (!ok) {
+    // fallback: save locally and inform user
+    saveLocal(USERS_KEY, usersMap);
+    alert("Registered locally but could not save to server (server unavailable).");
+  } else {
+    saveLocal(USERS_KEY, usersMap);
+  }
+  // set current user and save profile to server
   currentUser = { username, password: pass, bio: bio || "", avatar: "" };
-  localStorage.setItem(PROFILE_KEY, JSON.stringify(currentUser));
+  const profOK = await saveServerKey(PROFILE_KEY, currentUser);
+  if (!profOK) {
+    saveLocal(PROFILE_KEY, currentUser);
+    alert("Signed up locally (server save failed).");
+  } else {
+    saveLocal(PROFILE_KEY, currentUser);
+  }
   setSignedInUI();
   hideAuthOverlay();
   switchTab("feed");
   alert("Registered & signed in as @" + username);
 }
 
-function doLogin(){
+/* Login: check usersMap (server first, then fallback to local) */
+async function doLogin(){
   const username = (el("#loginUser").value || "").trim();
   const pass = (el("#loginPass").value || "").trim();
   if (!username || !pass) return alert("Enter username and password.");
-  const users = loadJSON(USERS_KEY, {});
-  const u = users[username];
+  // Try server users first
+  let serverUsers = await loadServerKey(USERS_KEY);
+  if (serverUsers) {
+    usersMap = serverUsers;
+  } else {
+    usersMap = loadLocal(USERS_KEY, {});
+  }
+  const u = usersMap[username];
   if (!u || u.password !== pass) return alert("Invalid username or password.");
-  currentUser = { username, password: pass, bio: u.bio || "", avatar: u.avatar || "" };
-  localStorage.setItem(PROFILE_KEY, JSON.stringify(currentUser));
+  // load profile from server key if present
+  const serverProfile = await loadServerKey(PROFILE_KEY);
+  if (serverProfile && serverProfile.username === username) {
+    currentUser = serverProfile;
+    saveLocal(PROFILE_KEY, currentUser);
+  } else {
+    // create profile object from users map entry (keeps parity)
+    currentUser = { username, password: pass, bio: u.bio || "", avatar: u.avatar || "" };
+    saveLocal(PROFILE_KEY, currentUser);
+    // try saving profile to server (best-effort)
+    await saveServerKey(PROFILE_KEY, currentUser);
+  }
+  saveLocal(USERS_KEY, usersMap);
   setSignedInUI();
   hideAuthOverlay();
   switchTab("feed");
@@ -182,53 +272,70 @@ function doLogout(){
   setSignedInUI();
   showAuthOverlay();
 }
-
-/* ================== Initial auth check & UI wiring ================== */
 el("#logoutBtn").addEventListener("click", doLogout);
-setSignedInUI();
+
+/* ensure signed in - overlay if not */
 function ensureSignedIn(){
-  currentUser = JSON.parse(localStorage.getItem(PROFILE_KEY) || "null") || currentUser;
+  currentUser = currentUser || loadLocal(PROFILE_KEY, null);
   if (!currentUser || !currentUser.username){
-    showAuthOverlay(); setSignedInUI(); return false;
+    showAuthOverlay();
+    setSignedInUI();
+    return false;
   }
-  hideAuthOverlay(); setSignedInUI(); return true;
+  hideAuthOverlay();
+  setSignedInUI();
+  return true;
 }
 
-/* ================== Tab navigation wiring ================== */
-qAll("#navTabs button").forEach(btn => {
-  btn.addEventListener("click", ()=> {
-    qAll("#navTabs button").forEach(b => b.classList.remove("active"));
-    btn.classList.add("active");
-    const tab = btn.getAttribute("data-tab") || btn.textContent.toLowerCase();
-    switchTab(tab);
-  });
-});
+/* ================= Profile avatar helper ================== */
+function getAvatarFor(username){
+  if (!username) return 'https://via.placeholder.com/100';
+  if (currentUser && currentUser.username === username && currentUser.avatar) return currentUser.avatar;
+  const users = usersMap || loadLocal(USERS_KEY, {});
+  if (users[username] && users[username].avatar) return users[username].avatar;
+  return 'https://via.placeholder.com/100';
+}
 
-/* ================== FEED logic ================== */
+/* ================ Feed (local posts + static JSON) ================ */
 async function loadFeed(){
   if (!ensureSignedIn()) return;
-  clearInterval(feedTimer);
   await refreshFeed();
-  feedTimer = setInterval(refreshFeed, FEED_REFRESH_MS);
 }
 
+/* Refresh feed: load static btd6-social.json and localPosts (from server if available) */
 async function refreshFeed(){
   const area = el("#contentArea");
   area.innerHTML = `<div class="feedPost"><div class="small">Loading feed...</div></div>`;
+  // load server static JSON posts
   let serverPosts = [];
   try {
     const res = await fetch("btd6-social.json");
-    if (res.ok) { const j = await res.json(); serverPosts = j.posts || []; }
+    if (res.ok) {
+      const j = await res.json();
+      serverPosts = j.posts || [];
+    }
   } catch(e) { console.warn("Could not load btd6-social.json", e); }
-  const local = loadJSON(LOCAL_POSTS, []);
-  allFeedPosts = [...local, ...serverPosts];
+
+  // load localPosts from server storage if available; fallback to localStorage
+  let srvPosts = await loadServerKey(LOCAL_POSTS);
+  if (Array.isArray(srvPosts)) {
+    localPosts = srvPosts;
+    saveLocal(LOCAL_POSTS, localPosts);
+  } else {
+    localPosts = loadLocal(LOCAL_POSTS, []);
+  }
+
+  // combine
+  allFeedPosts = [...localPosts, ...serverPosts];
   renderFeed();
 }
 
+/* Render feed posts with avatars and click -> openPost */
 function renderFeed(){
   const area = el("#contentArea");
   area.innerHTML = "";
-  const box = document.createElement("div"); box.className="feedPost";
+  // create post composer
+  const box = document.createElement("div"); box.className = "feedPost";
   box.innerHTML = `
     <h3>Create a Post</h3>
     <textarea id="newPostText" placeholder="What's on your mind?" style="height:70px"></textarea>
@@ -238,48 +345,59 @@ function renderFeed(){
   `;
   area.appendChild(box);
 
+  // show posts newest-first
   allFeedPosts.sort((a,b)=>b.id - a.id);
   for (const p of allFeedPosts){
     const postEl = document.createElement("div"); postEl.className = "feedPost";
-    // Title is clickable and opens the standalone post view
-    let html = `<h4><a href="#" onclick="openPost(${p.id});return false">@${escapeHtml(p.author)}</a></h4>`;
-    if (p.text) html += `<p>${escapeHtml(p.text)}</p>`;
-    html += `<div class="small">${escapeHtml(p.time || "")}</div>`;
-    postEl.innerHTML = html;
 
+    // header with avatar + author
+    const header = document.createElement("div"); header.className = "postHeader";
+    const avatarImg = document.createElement("img"); avatarImg.className = "avatar";
+    avatarImg.src = getAvatarFor(p.author);
+    avatarImg.alt = p.author;
+    avatarImg.onerror = ()=>{ avatarImg.src = 'https://via.placeholder.com/100'; };
+    avatarImg.addEventListener("click", (e)=>{ e.stopPropagation(); openProfile(p.author); });
+
+    const authorWrap = document.createElement("div");
+    authorWrap.innerHTML = `<div class="authorName"><a href="#" onclick="openPost(${p.id});return false">@${escapeHtml(p.author)}</a></div><div class="small">${escapeHtml(p.time || "")}</div>`;
+    header.appendChild(avatarImg);
+    header.appendChild(authorWrap);
+    postEl.appendChild(header);
+
+    // body
+    if (p.text) {
+      const t = document.createElement("div"); t.innerHTML = `<p>${escapeHtml(p.text)}</p>`; postEl.appendChild(t);
+    }
     if (p.image){
-      const img = document.createElement("img"); img.src = p.image; img.alt = "";
-      img.onerror = ()=>{ /* ignore broken image */ };
+      const img = document.createElement("img"); img.className = "media"; img.src = p.image;
+      img.onerror = ()=>{ /* ignore broken */ };
       postEl.appendChild(img);
     }
     if (p.link){
-      const linkWrap = document.createElement("div");
-      linkWrap.innerHTML = `<p><a href="${escapeAttr(p.link)}" target="_blank">${escapeHtml(p.link)}</a></p>`;
+      const linkWrap = document.createElement("div"); linkWrap.innerHTML = `<p><a href="${escapeAttr(p.link)}" target="_blank">${escapeHtml(p.link)}</a></p>`;
       postEl.appendChild(linkWrap);
     }
 
-    // action buttons: use event listeners so clicks don't cause navigation
+    // actions
     const actions = document.createElement("div"); actions.style.marginTop = "8px";
     const likeBtn = document.createElement("button"); likeBtn.className="action"; likeBtn.textContent = `👍 ${ (p.likes||[]).length }`;
-    likeBtn.addEventListener("click", (e)=>{ e.stopPropagation(); toggleLike(p.id,'like'); });
+    likeBtn.addEventListener("click", e=>{ e.stopPropagation(); toggleLike(p.id,'like'); });
     const disBtn = document.createElement("button"); disBtn.className="action"; disBtn.textContent = `👎 ${ (p.dislikes||[]).length }`;
-    disBtn.addEventListener("click", (e)=>{ e.stopPropagation(); toggleLike(p.id,'dislike'); });
+    disBtn.addEventListener("click", e=>{ e.stopPropagation(); toggleLike(p.id,'dislike'); });
     const comBtn = document.createElement("button"); comBtn.className="action"; comBtn.textContent = `💬 ${ (p.comments||[]).length }`;
-    comBtn.addEventListener("click", (e)=>{ e.stopPropagation(); promptComment(p.id); });
+    comBtn.addEventListener("click", e=>{ e.stopPropagation(); promptComment(p.id); });
     const shareBtn = document.createElement("button"); shareBtn.className="action"; shareBtn.textContent = "🔗 Share";
-    shareBtn.addEventListener("click", (e)=>{ e.stopPropagation(); sharePost(p.id); });
+    shareBtn.addEventListener("click", e=>{ e.stopPropagation(); sharePost(p.id); });
     actions.appendChild(likeBtn); actions.appendChild(disBtn); actions.appendChild(comBtn); actions.appendChild(shareBtn);
-
     if (p.author === (currentUser && currentUser.username ? currentUser.username : "You")){
       const del = document.createElement("button"); del.className="danger"; del.textContent="🗑 Delete";
-      del.addEventListener("click", (e)=>{ e.stopPropagation(); deletePost(p.id); });
+      del.addEventListener("click", e=>{ e.stopPropagation(); deletePost(p.id); });
       actions.appendChild(del);
     }
     postEl.appendChild(actions);
 
-    // comments inline
-    const cmWrap = document.createElement("div");
-    cmWrap.style.marginTop = "6px"; cmWrap.style.borderTop = "1px solid #333"; cmWrap.style.paddingTop = "6px";
+    // comments preview
+    const cmWrap = document.createElement("div"); cmWrap.style.marginTop="6px"; cmWrap.style.borderTop="1px solid #333"; cmWrap.style.paddingTop="6px";
     if (p.comments && p.comments.length){
       p.comments.forEach(c=>{
         const cd = document.createElement("div"); cd.className="small"; cd.style.marginLeft="8px";
@@ -289,92 +407,14 @@ function renderFeed(){
     }
     postEl.appendChild(cmWrap);
 
-    // Make the whole post clickable to open the same post (but title already does that).
-    postEl.addEventListener("dblclick", ()=> openPost(p.id)); // double-click as alternative
+    // double-click opens standalone view
+    postEl.addEventListener("dblclick", ()=> openPost(p.id));
 
     area.appendChild(postEl);
   }
 }
 
-/* Open a standalone post view and update URL ?post=<id> */
-function openPost(id){
-  const p = allFeedPosts.find(x=>x.id === id);
-  if (!p) return alert("Post not found");
-  const area = el("#contentArea");
-  history.replaceState({}, "", window.location.pathname + "?post=" + id);
-  area.innerHTML = "";
-  const postEl = document.createElement("div"); postEl.className = "feedPost";
-  let html = `<h3>@${escapeHtml(p.author)}</h3>`;
-  if (p.text) html += `<p>${escapeHtml(p.text)}</p>`;
-  html += `<div class="small">${escapeHtml(p.time || "")}</div>`;
-  postEl.innerHTML = html;
-  if (p.image){
-    const img = document.createElement("img"); img.src = p.image; img.alt = "";
-    postEl.appendChild(img);
-  }
-  if (p.link){
-    const linkWrap = document.createElement("div");
-    linkWrap.innerHTML = `<p><a href="${escapeAttr(p.link)}" target="_blank">${escapeHtml(p.link)}</a></p>`;
-    postEl.appendChild(linkWrap);
-  }
-  // action buttons
-  const actions = document.createElement("div"); actions.style.marginTop = "8px";
-  const likeBtn = document.createElement("button"); likeBtn.className="action"; likeBtn.textContent = `👍 ${ (p.likes||[]).length }`;
-  likeBtn.addEventListener("click", ()=> toggleLike(p.id,'like'));
-  const disBtn = document.createElement("button"); disBtn.className="action"; disBtn.textContent = `👎 ${ (p.dislikes||[]).length }`;
-  disBtn.addEventListener("click", ()=> toggleLike(p.id,'dislike'));
-  const comBtn = document.createElement("button"); comBtn.className="action"; comBtn.textContent = `💬 ${ (p.comments||[]).length }`;
-  comBtn.addEventListener("click", ()=> promptComment(p.id));
-  const shareBtn = document.createElement("button"); shareBtn.className="action"; shareBtn.textContent = "🔗 Share";
-  shareBtn.addEventListener("click", ()=> sharePost(p.id));
-  const backBtn = document.createElement("button"); backBtn.className="smallBtn"; backBtn.textContent = "← Back";
-  backBtn.addEventListener("click", ()=> { history.replaceState({}, "", window.location.pathname); renderFeed(); });
-
-  actions.appendChild(backBtn); actions.appendChild(likeBtn); actions.appendChild(disBtn); actions.appendChild(comBtn); actions.appendChild(shareBtn);
-
-  if (p.author === (currentUser && currentUser.username ? currentUser.username : "You")){
-    const del = document.createElement("button"); del.className="danger"; del.textContent="🗑 Delete";
-    del.addEventListener("click", ()=> { if(confirm("Delete this post?")){ deletePost(p.id); history.replaceState({}, "", window.location.pathname); refreshFeed(); }});
-    actions.appendChild(del);
-  }
-
-  postEl.appendChild(actions);
-
-  // comments area (editable)
-  const commentsWrap = document.createElement("div");
-  commentsWrap.style.marginTop = "10px";
-  commentsWrap.innerHTML = `<h4>Comments</h4>`;
-  if (p.comments && p.comments.length){
-    p.comments.forEach(c=>{
-      const cd = document.createElement("div"); cd.className="small"; cd.style.marginBottom="6px";
-      cd.innerHTML = `<b>${escapeHtml(c.author)}</b>: ${escapeHtml(c.text)} <span class="small">(${escapeHtml(c.time||"")})</span>`;
-      commentsWrap.appendChild(cd);
-    });
-  } else {
-    const note = document.createElement("div"); note.className="small"; note.textContent = "No comments yet.";
-    commentsWrap.appendChild(note);
-  }
-  // add comment input
-  const commentBox = document.createElement("div"); commentBox.style.marginTop="8px";
-  commentBox.innerHTML = `<input id="singlePostComment" placeholder="Write a comment..." style="width:70%"><button class="action" id="singlePostCommentBtn">Post</button>`;
-  commentBox.querySelector("#singlePostCommentBtn").addEventListener("click", ()=> {
-    const txt = commentBox.querySelector("#singlePostComment").value.trim();
-    if (!txt) return alert("Write a comment");
-    p.comments = p.comments || [];
-    p.comments.push({ author: currentUser.username || "You", text: txt, time: new Date().toLocaleTimeString() });
-    // update local storage if local
-    const local = loadJSON(LOCAL_POSTS, []);
-    const idx = local.findIndex(x=>x.id===p.id);
-    if (idx >= 0){ local[idx] = p; saveJSON(LOCAL_POSTS, local); }
-    openPost(p.id); // re-open to refresh view
-  });
-  postEl.appendChild(commentsWrap);
-  postEl.appendChild(commentBox);
-
-  area.appendChild(postEl);
-}
-
-/* ================== Create/post helpers used in feed ================== */
+/* Create post: save to server key LOCAL_POSTS, fallback to localStorage */
 async function handleCreatePost(){
   if (!ensureSignedIn()) return;
   const text = el("#newPostText").value.trim();
@@ -383,32 +423,164 @@ async function handleCreatePost(){
   if (!text && !link && !file) return alert("Write or attach something first.");
   const post = { id: Date.now(), author: currentUser.username || "You", text, link, image: "", time: new Date().toLocaleString(), likes: [], dislikes: [], comments: [] };
   if (file) post.image = await fileToDataURL(file);
-  const local = loadJSON(LOCAL_POSTS, []);
-  local.push(post); saveJSON(LOCAL_POSTS, local);
+  // push to localPosts array and attempt to save server-side
+  localPosts = localPosts || loadLocal(LOCAL_POSTS, []);
+  localPosts.unshift(post); // newest first
+  const ok = await saveServerKey(LOCAL_POSTS, localPosts);
+  if (!ok) {
+    // fallback: save locally
+    saveLocal(LOCAL_POSTS, localPosts);
+    alert("Post saved locally, but failed to save to server (server unavailable).");
+  } else {
+    saveLocal(LOCAL_POSTS, localPosts);
+  }
   await refreshFeed();
-  el("#newPostText").value=""; el("#newPostLink").value=""; el("#newPostImage").value="";
+  el("#newPostText").value = ""; el("#newPostLink").value=""; el("#newPostImage").value="";
 }
-function fileToDataURL(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); }); }
-function toggleLike(id,type){ const me = currentUser && currentUser.username ? currentUser.username : "You"; const p = allFeedPosts.find(x=>x.id===id); if(!p) return; p.likes = p.likes || []; p.dislikes = p.dislikes || []; if(type==="like"){ if(p.likes.includes(me)) p.likes = p.likes.filter(u=>u!==me); else { p.likes.push(me); p.dislikes = p.dislikes.filter(u=>u!==me);} } else { if(p.dislikes.includes(me)) p.dislikes = p.dislikes.filter(u=>u!==me); else { p.dislikes.push(me); p.likes = p.likes.filter(u=>u!==me);} } const local = loadJSON(LOCAL_POSTS, []); const idx = local.findIndex(x=>x.id===p.id); if (idx >= 0){ local[idx] = p; saveJSON(LOCAL_POSTS, local); } renderFeed(); }
-function promptComment(id){ const t = prompt("Enter comment:"); if(!t) return; const p = allFeedPosts.find(x=>x.id===id); if(!p) return; p.comments = p.comments || []; p.comments.push({ author: currentUser.username || "You", text: t, time: new Date().toLocaleTimeString() }); const local = loadJSON(LOCAL_POSTS, []); const idx = local.findIndex(x=>x.id===p.id); if (idx >= 0){ local[idx] = p; saveJSON(LOCAL_POSTS, local); } renderFeed(); }
-function deletePost(id){ if (!confirm("Delete this post?")) return; let local = loadJSON(LOCAL_POSTS, []); local = local.filter(p=>p.id !== id); saveJSON(LOCAL_POSTS, local); allFeedPosts = allFeedPosts.filter(p=>p.id !== id); renderFeed(); }
-function sharePost(id){ const url = window.location.origin + window.location.pathname + "?post=" + id; navigator.clipboard.writeText(url).then(()=> alert("Link copied!"), ()=> alert("Could not copy link.")); }
 
-/* ================= THREADS (server-synced via /room/<ROOM>) ================= */
+/* Helper: File to data URL */
+function fileToDataURL(file){
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = e => rej(e);
+    r.readAsDataURL(file);
+  });
+}
+
+/* Like/dislike/comment/delete/share helpers (update localPosts & server) */
+async function persistLocalPostsToServer(){
+  try { await saveServerKey(LOCAL_POSTS, localPosts); saveLocal(LOCAL_POSTS, localPosts); return true; }
+  catch (e) { saveLocal(LOCAL_POSTS, localPosts); return false; }
+}
+
+function toggleLike(id,type){
+  const me = currentUser && currentUser.username ? currentUser.username : "You";
+  // modify in-place in localPosts if present, otherwise modify in allFeedPosts (if static server post, we don't save)
+  let p = localPosts.find(x=>x.id===id);
+  if (!p) p = allFeedPosts.find(x=>x.id===id);
+  if (!p) return;
+  p.likes = p.likes || []; p.dislikes = p.dislikes || [];
+  if (type==="like"){ if (p.likes.includes(me)) p.likes = p.likes.filter(u=>u!==me); else { p.likes.push(me); p.dislikes = p.dislikes.filter(u=>u!==me); } }
+  else { if (p.dislikes.includes(me)) p.dislikes = p.dislikes.filter(u=>u!==me); else { p.dislikes.push(me); p.likes = p.likes.filter(u=>u!==me); } }
+  // persist changes if post is part of localPosts
+  if (localPosts.find(x=>x.id===id)){
+    persistLocalPostsToServer().then(ok=>{ if(!ok) console.warn("Failed to persist likes to server"); });
+  }
+  renderFeed();
+}
+
+function promptComment(id){
+  const t = prompt("Enter comment:");
+  if (!t) return;
+  let p = localPosts.find(x=>x.id===id);
+  if (!p) p = allFeedPosts.find(x=>x.id===id);
+  if (!p) return;
+  p.comments = p.comments || [];
+  p.comments.push({ author: currentUser.username || "You", text: t, time: new Date().toLocaleTimeString() });
+  if (localPosts.find(x=>x.id===id)){
+    persistLocalPostsToServer().then(ok=>{ if(!ok) console.warn("Failed to persist comments to server"); });
+  }
+  renderFeed();
+}
+
+function deletePost(id){
+  if (!confirm("Delete this post?")) return;
+  // remove from localPosts if present and persist server-side
+  localPosts = localPosts.filter(p => p.id !== id);
+  persistLocalPostsToServer().then(ok=>{
+    if (!ok) alert("Deleted locally but failed to update server.");
+  });
+  allFeedPosts = allFeedPosts.filter(p => p.id !== id);
+  renderFeed();
+}
+
+function sharePost(id){
+  const url = window.location.origin + window.location.pathname + "?post=" + id;
+  navigator.clipboard.writeText(url).then(()=> alert("Link copied!"), ()=> alert("Could not copy link."));
+}
+
+/* Standalone post view */
+function openPost(id){
+  const p = allFeedPosts.find(x => x.id === id);
+  if (!p) return alert("Post not found");
+  history.replaceState({}, "", window.location.pathname + "?post=" + id);
+  const area = el("#contentArea"); area.innerHTML = "";
+  const postEl = document.createElement("div"); postEl.className = "feedPost";
+
+  // header
+  const header = document.createElement("div"); header.className = "postHeader";
+  const avatarImg = document.createElement("img"); avatarImg.className = "avatar";
+  avatarImg.src = getAvatarFor(p.author); avatarImg.onerror = ()=>{ avatarImg.src = 'https://via.placeholder.com/100'; };
+  const authorWrap = document.createElement("div");
+  authorWrap.innerHTML = `<div class="authorName">@${escapeHtml(p.author)}</div><div class="small">${escapeHtml(p.time || "")}</div>`;
+  header.appendChild(avatarImg); header.appendChild(authorWrap); postEl.appendChild(header);
+
+  if (p.text) postEl.appendChild(Object.assign(document.createElement("div"), { innerHTML: `<p>${escapeHtml(p.text)}</p>` }));
+  if (p.image){
+    const img = document.createElement("img"); img.className="media"; img.src = p.image; postEl.appendChild(img);
+  }
+  if (p.link) postEl.appendChild(Object.assign(document.createElement("div"), { innerHTML: `<p><a href="${escapeAttr(p.link)}" target="_blank">${escapeHtml(p.link)}</a></p>` }));
+
+  // actions
+  const actions = document.createElement("div"); actions.style.marginTop = "8px";
+  const backBtn = document.createElement("button"); backBtn.className="smallBtn"; backBtn.textContent = "← Back";
+  backBtn.addEventListener("click", ()=> { history.replaceState({}, "", window.location.pathname); refreshFeed(); });
+  const likeBtn = document.createElement("button"); likeBtn.className="action"; likeBtn.textContent = `👍 ${ (p.likes||[]).length }`;
+  likeBtn.addEventListener("click", ()=> toggleLike(p.id,'like'));
+  const disBtn = document.createElement("button"); disBtn.className="action"; disBtn.textContent = `👎 ${ (p.dislikes||[]).length }`;
+  disBtn.addEventListener("click", ()=> toggleLike(p.id,'dislike'));
+  const comBtn = document.createElement("button"); comBtn.className="action"; comBtn.textContent = `💬 ${ (p.comments||[]).length }`;
+  comBtn.addEventListener("click", ()=> promptComment(p.id));
+  const shareBtn = document.createElement("button"); shareBtn.className="action"; shareBtn.textContent = "🔗 Share";
+  shareBtn.addEventListener("click", ()=> sharePost(p.id));
+  actions.appendChild(backBtn); actions.appendChild(likeBtn); actions.appendChild(disBtn); actions.appendChild(comBtn); actions.appendChild(shareBtn);
+  if (p.author === (currentUser && currentUser.username ? currentUser.username : "You")){
+    const del = document.createElement("button"); del.className="danger"; del.textContent="🗑 Delete";
+    del.addEventListener("click", ()=> { if (confirm("Delete this post?")) { deletePost(p.id); history.replaceState({}, "", window.location.pathname); refreshFeed(); }});
+    actions.appendChild(del);
+  }
+  postEl.appendChild(actions);
+
+  // comments
+  const commentsWrap = document.createElement("div"); commentsWrap.style.marginTop="10px"; commentsWrap.innerHTML = `<h4>Comments</h4>`;
+  if (p.comments && p.comments.length){
+    p.comments.forEach(c=>{
+      const cd = document.createElement("div"); cd.className="small"; cd.style.marginBottom="6px";
+      cd.innerHTML = `<b>${escapeHtml(c.author)}</b>: ${escapeHtml(c.text)} <div class="small">${escapeHtml(c.time||"")}</div>`;
+      commentsWrap.appendChild(cd);
+    });
+  } else {
+    const none = document.createElement("div"); none.className="small"; none.textContent = "No comments yet.";
+    commentsWrap.appendChild(none);
+  }
+  const commentBox = document.createElement("div"); commentBox.style.marginTop="8px";
+  commentBox.innerHTML = `<input id="singlePostComment" placeholder="Write a comment..." style="width:70%"><button class="action" id="singlePostCommentBtn">Post</button>`;
+  commentBox.querySelector("#singlePostCommentBtn").addEventListener("click", ()=> {
+    const txt = commentBox.querySelector("#singlePostComment").value.trim();
+    if (!txt) return alert("Write a comment");
+    p.comments = p.comments || [];
+    p.comments.push({ author: currentUser.username || "You", text: txt, time: new Date().toLocaleTimeString() });
+    // persist if local post
+    const idx = localPosts.findIndex(x=>x.id===p.id);
+    if (idx >= 0) { localPosts[idx] = p; persistLocalPostsToServer(); }
+    openPost(p.id);
+  });
+  postEl.appendChild(commentsWrap); postEl.appendChild(commentBox);
+  el("#contentArea").appendChild(postEl);
+}
+
+/* =============== Threads (server-synced, no auto refresh) =============== */
 async function loadThreads(){
   if (!ensureSignedIn()) return;
-  clearInterval(threadTimer);
   await refreshThreads();
-  threadTimer = setInterval(refreshThreads, THREADS_REFRESH_MS);
 }
 async function refreshThreads(){
   const area = el("#contentArea"); area.innerHTML = `<div class="feedPost"><div class="small">Loading threads...</div></div>`;
   if (!SERVER_URL) { area.innerHTML = `<div class="feedPost"><div class="small">Server not configured (tunnel.txt missing)</div></div>`; return; }
   try {
-    const res = await fetch(`${SERVER_URL}/room/${ROOM}?key=${KEY}`);
-    const json = await res.json();
-    if (!json.ok) throw new Error("server returned not ok");
-    const threads = json.data?.threads || [];
+    const data = await serverFetchRoom();
+    const threads = data.threads || [];
     renderThreads(threads);
   } catch(e){
     console.warn("Failed to load threads:", e);
@@ -446,12 +618,10 @@ async function createThread(){
   if (!title || !text) return alert("Enter title and text");
   if (!SERVER_URL) return alert("Server not configured (tunnel.txt missing).");
   try {
-    const res = await fetch(`${SERVER_URL}/room/${ROOM}?key=${KEY}`);
-    const json = await res.json();
-    const data = json.data || {};
-    data.threads ||= [];
+    const data = await serverFetchRoom();
+    data.threads = data.threads || [];
     data.threads.unshift({ id: Date.now(), author: currentUser.username || "You", title, text, replies: [], time: new Date().toLocaleString() });
-    await fetch(`${SERVER_URL}/room/${ROOM}?key=${KEY}`, { method: "POST", headers: { "Content-Type":"application/json" }, body: JSON.stringify(data) });
+    await serverSaveRoom(data);
     await refreshThreads();
   } catch(e){ alert("Could not create thread (server error)."); console.error(e); }
 }
@@ -459,23 +629,21 @@ async function replyThread(id){
   const txt = prompt("Reply:"); if (!txt) return;
   if (!SERVER_URL) return alert("Server not configured (tunnel.txt missing).");
   try {
-    const res = await fetch(`${SERVER_URL}/room/${ROOM}?key=${KEY}`);
-    const json = await res.json();
-    const data = json.data || {};
-    data.threads ||= [];
-    const thread = data.threads.find(t => t.id === id);
-    if (!thread) return alert("Thread not found on server.");
-    thread.replies ||= [];
-    thread.replies.push({ author: currentUser.username || "You", text: txt, time: new Date().toLocaleTimeString() });
-    await fetch(`${SERVER_URL}/room/${ROOM}?key=${KEY}`, { method: "POST", headers: { "Content-Type":"application/json" }, body: JSON.stringify(data) });
+    const data = await serverFetchRoom();
+    data.threads = data.threads || [];
+    const t = data.threads.find(x=>x.id===id);
+    if (!t) return alert("Thread not found on server.");
+    t.replies = t.replies || [];
+    t.replies.push({ author: currentUser.username || "You", text: txt, time: new Date().toLocaleTimeString() });
+    await serverSaveRoom(data);
     await refreshThreads();
   } catch(e){ alert("Could not reply (server error)."); console.error(e); }
 }
 
-/* ================== DMs (local only) ================== */
+/* =============== DMs (local only) =============== */
 function loadDMList(){
   if (!ensureSignedIn()) return;
-  const dms = loadJSON(LOCAL_DMS, {});
+  const dms = loadLocal(LOCAL_DMS, {});
   const area = el("#contentArea");
   let html = `<div class="feedPost"><h3>Messages</h3>`;
   const users = Object.keys(dms).sort();
@@ -491,10 +659,10 @@ function loadDMList(){
 function openNewDM(){ const u = el("#newDMUser").value.trim(); if (!u) return alert("Enter username"); openDM(u); }
 function openDM(user){
   if (!ensureSignedIn()) return;
-  const dms = loadJSON(LOCAL_DMS, {});
+  const dms = loadLocal(LOCAL_DMS, {});
   dms[user] = dms[user] || [];
   dms[user].forEach(m=>m.read = true);
-  saveJSON(LOCAL_DMS, dms);
+  saveLocal(LOCAL_DMS, dms);
   let html = `<div class="feedPost"><h3>Chat — @${escapeHtml(user)}</h3><div id="dmMsgs" style="height:300px;overflow-y:auto;border:1px solid #333;padding:6px">`;
   dms[user].forEach(m => html += `<div style="margin-bottom:6px"><b>${escapeHtml(m.from)}</b>: ${escapeHtml(m.text)} <div class="small">${escapeHtml(m.time||"")}</div></div>`);
   html += `</div><div style="margin-top:8px"><input id="dmText" placeholder="Message" style="width:70%"><button class="action" onclick="sendDM('${escapeAttr(user)}')">Send</button> <button onclick="loadDMList()">← Back</button></div></div>`;
@@ -502,17 +670,19 @@ function openDM(user){
 }
 function sendDM(user){
   const txt = el("#dmText").value.trim(); if (!txt) return;
-  const dms = loadJSON(LOCAL_DMS, {});
+  const dms = loadLocal(LOCAL_DMS, {});
   dms[user] = dms[user] || [];
   dms[user].push({ from: currentUser.username || "You", to: user, text: txt, time: new Date().toLocaleTimeString(), read: false });
-  saveJSON(LOCAL_DMS, dms);
+  saveLocal(LOCAL_DMS, dms);
   openDM(user);
 }
 
-/* ================== PROFILE ================== */
-function loadProfile(){
+/* =============== Profile UI (save to server/users map) =============== */
+async function loadProfile(){
   if (!ensureSignedIn()) return;
-  const u = currentUser;
+  // ensure usersMap current
+  usersMap = usersMap || loadLocal(USERS_KEY, {});
+  const u = currentUser || loadLocal(PROFILE_KEY, {});
   el("#contentArea").innerHTML = `
     <div class="feedPost" style="text-align:center">
       <h3>Your Profile</h3>
@@ -531,20 +701,31 @@ function loadProfile(){
     currentUser.avatar = d;
   };
 }
-function saveProfile(){
+
+async function saveProfile(){
+  // update currentUser object
+  currentUser = currentUser || {};
   currentUser.username = el("#profileName").value.trim() || "You";
-  currentUser.password = el("#profilePass").value;
+  currentUser.password = el("#profilePass").value || "";
   currentUser.bio = el("#profileBio").value.trim();
-  saveJSON(PROFILE_KEY, currentUser);
-  const users = loadJSON(USERS_KEY, {});
-  users[currentUser.username] = users[currentUser.username] || {};
-  users[currentUser.username].password = currentUser.password;
-  users[currentUser.username].bio = currentUser.bio;
-  users[currentUser.username].avatar = currentUser.avatar || "";
-  saveJSON(USERS_KEY, users);
-  alert("Profile saved.");
+  // avatar already set if user uploaded
+  saveLocal(PROFILE_KEY, currentUser);
+  // update usersMap
+  usersMap = usersMap || loadLocal(USERS_KEY, {});
+  usersMap[currentUser.username] = usersMap[currentUser.username] || {};
+  usersMap[currentUser.username].password = currentUser.password;
+  usersMap[currentUser.username].bio = currentUser.bio;
+  usersMap[currentUser.username].avatar = currentUser.avatar || usersMap[currentUser.username].avatar || "";
+  saveLocal(USERS_KEY, usersMap);
+  // attempt to save both to server (best-effort)
+  const uok = await saveServerKey(USERS_KEY, usersMap);
+  const pok = await saveServerKey(PROFILE_KEY, currentUser);
+  if (!uok || !pok) alert("Saved locally — failed to update server (server unreachable).");
+  else { alert("Profile saved (server updated)."); }
   setSignedInUI();
 }
+
+/* open other user's profile (mini timeline) */
 function openProfile(username){
   const posts = allFeedPosts.filter(p => p.author === username);
   let html = `<div class="feedPost" style="text-align:center"><h3>@${escapeHtml(username)}</h3><p class="small">User profile</p><button onclick="switchTab('feed')">← Back</button></div>`;
@@ -558,7 +739,7 @@ function makeMiniPostHTML(p){
   return div.outerHTML;
 }
 
-/* ================== Nav & helpers ================== */
+/* =============== Navigation =============== */
 function switchTab(tab){
   if (!ensureSignedIn()) return;
   qAll("#navTabs button").forEach(b => b.classList.remove("active"));
@@ -569,29 +750,43 @@ function switchTab(tab){
   else if (tab === "messages") loadDMList();
   else if (tab === "profile") loadProfile();
 }
-function escapeHtml(s){ if (s===undefined || s===null) return ""; return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c]); }
-function escapeAttr(s){ return String(s).replace(/"/g,'&quot;'); }
 
-/* ================== Init ================== */
+/* =============== Initialization =============== */
 (async function init(){
   await loadConfig();
-  // initial auth
-  currentUser = JSON.parse(localStorage.getItem(PROFILE_KEY) || "null") || currentUser;
+  // Attempt to load server-stored profile/users/localPosts and mirror to localStorage.
+  // If server unavailable, fall back to localStorage.
+  let srvUsers = null, srvProfile = null, srvLocalPosts = null;
+  try {
+    if (SERVER_URL) {
+      srvUsers = await loadServerKey(USERS_KEY);
+      srvProfile = await loadServerKey(PROFILE_KEY);
+      srvLocalPosts = await loadServerKey(LOCAL_POSTS);
+    }
+  } catch(e){ console.warn("Server fetch keys failed at init:", e); }
+
+  if (srvUsers) { usersMap = srvUsers; saveLocal(USERS_KEY, usersMap); } else { usersMap = loadLocal(USERS_KEY, {}); }
+  if (srvProfile) { currentUser = srvProfile; saveLocal(PROFILE_KEY, currentUser); } else { currentUser = loadLocal(PROFILE_KEY, null); }
+  if (Array.isArray(srvLocalPosts)) { localPosts = srvLocalPosts; saveLocal(LOCAL_POSTS, localPosts); } else { localPosts = loadLocal(LOCAL_POSTS, []); }
+
   setSignedInUI();
+
+  // If no signed-in user, show auth overlay; otherwise open feed or ?post param
   if (!currentUser || !currentUser.username) {
     showAuthOverlay();
   } else {
-    // ensure user saved in users map
-    const users = loadJSON(USERS_KEY, {});
-    users[currentUser.username] = users[currentUser.username] || {};
-    users[currentUser.username].password = currentUser.password || users[currentUser.username].password || "";
-    users[currentUser.username].bio = currentUser.bio || users[currentUser.username].bio || "";
-    users[currentUser.username].avatar = currentUser.avatar || users[currentUser.username].avatar || "";
-    saveJSON(USERS_KEY, users);
-    // if ?post=ID present, open that post; else open feed
+    // ensure users map has this user
+    usersMap[currentUser.username] = usersMap[currentUser.username] || {};
+    usersMap[currentUser.username].password = currentUser.password || usersMap[currentUser.username].password || "";
+    usersMap[currentUser.username].bio = currentUser.bio || usersMap[currentUser.username].bio || "";
+    usersMap[currentUser.username].avatar = currentUser.avatar || usersMap[currentUser.username].avatar || "";
+    saveLocal(USERS_KEY, usersMap);
+    // save server copies if possible
+    await saveServerKey(USERS_KEY, usersMap).catch(()=>{});
+    await saveServerKey(PROFILE_KEY, currentUser).catch(()=>{});
+    // open ?post parameter if present
     const params = new URLSearchParams(window.location.search);
     if (params.has("post")) {
-      // load feed data first, then open the post
       await refreshFeed();
       const pid = Number(params.get("post"));
       if (!isNaN(pid)) openPost(pid);
@@ -602,12 +797,12 @@ function escapeAttr(s){ return String(s).replace(/"/g,'&quot;'); }
   }
 })();
 
-/* expose some functions for inline handlers & console */
+/* expose some functions used inline */
 window.openProfile = openProfile;
-window.replyThread = replyThread;
-window.refreshThreads = refreshThreads;
-window.refreshFeed = refreshFeed;
 window.openPost = openPost;
+window.replyThread = replyThread;
+window.refreshFeed = refreshFeed;
+window.refreshThreads = refreshThreads;
 
 </script>
 </body>
