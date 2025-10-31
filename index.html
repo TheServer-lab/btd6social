@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>🐵 BTD6 Social — Server-only storage</title>
+<title>🐵 BTD6 Social — Tabs fixed</title>
 <style>
   :root { --bg:#121212; --card:#1a1a1a; --accent:#f6b93b; --muted:#999; }
   body{font-family:"Segoe UI",Arial,sans-serif;background:var(--bg);color:#fff;margin:0}
@@ -70,8 +70,8 @@
         <div class="authRow"><input id="loginUser" placeholder="Username"></div>
         <div class="authRow"><input id="loginPass" type="password" placeholder="Password"></div>
         <div style="display:flex;gap:8px;justify-content:flex-end">
-          <button class="action" onclick="doLogin()">Login</button>
-          <button class="smallBtn" onclick="showRegister()">Register</button>
+          <button class="action" id="loginBtn">Login</button>
+          <button class="smallBtn" id="showRegisterBtn">Register</button>
         </div>
         <p class="small" style="margin-top:10px">Accounts & profile data are stored *only* on the server.</p>
       </div>
@@ -83,8 +83,8 @@
         <div class="authRow"><input id="regPass" type="password" placeholder="Choose password"></div>
         <div class="authRow"><input id="regBio" placeholder="Short bio (optional)"></div>
         <div style="display:flex;gap:8px;justify-content:flex-end">
-          <button class="action" onclick="doRegister()">Register</button>
-          <button class="smallBtn" onclick="showLogin()">Back</button>
+          <button class="action" id="regBtn">Register</button>
+          <button class="smallBtn" id="showLoginBtn">Back</button>
         </div>
         <p class="small" style="margin-top:10px">No local storage used. If the server is down writes will fail.</p>
       </div>
@@ -104,11 +104,11 @@ const USERS_KEY = "btd6_users";          // map username -> { password, bio, ava
 const LOCAL_POSTS = "btd6_localPosts";   // posts created via UI (stored server-side)
 const LOCAL_DMS = "btd6_localDMs";       // DMs stored server-side
 
-/* in-memory state (no localStorage) */
-let currentUser = null;   // { username, password, bio, avatar } kept in memory after login
-let usersMap = {};        // loaded from server on demand
-let localPosts = [];      // posts created by users (from server)
-let allFeedPosts = [];    // combined (localPosts + static btd6-social.json)
+/* runtime state (memory only) */
+let currentUser = null;   // { username, password, bio, avatar }
+let usersMap = {};
+let localPosts = [];
+let allFeedPosts = [];
 
 /* DOM helpers */
 const el = s => document.querySelector(s);
@@ -116,7 +116,7 @@ const qAll = s => Array.from(document.querySelectorAll(s));
 function escapeHtml(s){ if (s===undefined || s===null) return ""; return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c]); }
 function escapeAttr(s){ return String(s).replace(/"/g,'&quot;'); }
 
-/* ================= Server helpers (room endpoint) ================= */
+/* ============ Server / room helpers ============ */
 async function loadConfig(){
   try {
     const r = await fetch("tunnel.txt");
@@ -149,7 +149,6 @@ async function serverSaveRoom(data){
   if (!res.ok) throw new Error("server save failed");
   try { return await res.json(); } catch(e){ return null; }
 }
-
 async function loadServerKey(keyName){
   const data = await serverFetchRoom();
   return (data.server_storage && data.server_storage[keyName]) ? data.server_storage[keyName] : null;
@@ -162,7 +161,7 @@ async function saveServerKey(keyName, value){
   return true;
 }
 
-/* ================= Auth UI ================= */
+/* ============ Auth UI & logic ============ */
 function showAuthOverlay(){ el("#authOverlay").style.display = "flex"; showLogin(); }
 function hideAuthOverlay(){ el("#authOverlay").style.display = "none"; }
 function showLogin(){ el("#loginForm").style.display = "block"; el("#registerForm").style.display = "none"; el("#authErr").style.display = "none"; }
@@ -177,29 +176,24 @@ function setSignedInUI(){
     el("#logoutBtn").style.display = "none";
   }
 }
+function showAuthError(msg){ const e = el("#authErr"); e.textContent = msg; e.style.display = "block"; }
 
-/* ========== Authentication (server-only) ========== */
+/* Register (server-only) */
 async function doRegister(){
   const username = (el("#regUser").value || "").trim();
   const pass = (el("#regPass").value || "").trim();
   const bio = (el("#regBio").value || "").trim();
   if (!username || !pass) return showAuthError("Enter username and password.");
-
   if (!serverAvailable()) return showAuthError("Server not configured; cannot register.");
-
   try {
-    // load users map from server
     const srv = await loadServerKey(USERS_KEY) || {};
     if (srv[username]) return showAuthError("Username taken.");
     srv[username] = { password: pass, bio: bio || "", avatar: "" };
     await saveServerKey(USERS_KEY, srv);
     usersMap = srv;
-    // create profile on server (optional)
     currentUser = { username, password: pass, bio: bio || "", avatar: "" };
-    await saveServerKey(PROFILE_KEY, currentUser);
-    setSignedInUI();
-    hideAuthOverlay();
-    switchTab("feed");
+    await saveServerKey(PROFILE_KEY, currentUser).catch(()=>{});
+    setSignedInUI(); hideAuthOverlay(); switchTab("feed");
     alert("Registered & signed in as @" + username);
   } catch (e) {
     console.error(e);
@@ -207,24 +201,19 @@ async function doRegister(){
   }
 }
 
+/* Login (server-only) */
 async function doLogin(){
   const username = (el("#loginUser").value || "").trim();
   const pass = (el("#loginPass").value || "").trim();
   if (!username || !pass) return showAuthError("Enter username and password.");
   if (!serverAvailable()) return showAuthError("Server not configured; cannot login.");
-
   try {
     const srv = await loadServerKey(USERS_KEY) || {};
     usersMap = srv;
     const u = usersMap[username];
     if (!u || u.password !== pass) return showAuthError("Invalid username or password.");
-    // set currentUser in memory; do NOT persist locally
     currentUser = { username, password: pass, bio: u.bio || "", avatar: u.avatar || "" };
-    // Optionally store last-signed-in profile on server under PROFILE_KEY (not required)
-    // await saveServerKey(PROFILE_KEY, currentUser); // uncomment if desired
-    setSignedInUI();
-    hideAuthOverlay();
-    switchTab("feed");
+    setSignedInUI(); hideAuthOverlay(); switchTab("feed");
     alert("Signed in as @" + username);
   } catch (e) {
     console.error(e);
@@ -232,49 +221,34 @@ async function doLogin(){
   }
 }
 
-function doLogout(){
-  if (!confirm("Log out?")) return;
-  currentUser = null;
-  setSignedInUI();
-  showAuthOverlay();
-}
+/* Logout */
+function doLogout(){ if (!confirm("Log out?")) return; currentUser = null; setSignedInUI(); showAuthOverlay(); }
 el("#logoutBtn").addEventListener("click", doLogout);
 
-function showAuthError(msg){
-  const e = el("#authErr");
-  e.textContent = msg;
-  e.style.display = "block";
-}
-
-/* ================= Profile helpers ================= */
+/* ============ Helpers ============ */
 function getAvatarFor(username){
   if (!username) return 'https://via.placeholder.com/100';
   if (currentUser && currentUser.username === username && currentUser.avatar) return currentUser.avatar;
-  return (usersMap[username] && usersMap[username].avatar) ? usersMap[username].avatar : 'https://via.placeholder.com/100';
+  if (usersMap && usersMap[username] && usersMap[username].avatar) return usersMap[username].avatar;
+  return 'https://via.placeholder.com/100';
 }
+function fileToDataURL(file){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); }); }
 
-/* ================= Feed (server-only localPosts + static JSON) ================= */
+/* ============ Feed ============ */
 async function loadFeed(){
   if (!ensureSignedIn()) return;
   await refreshFeed();
 }
-
 async function refreshFeed(){
   const area = el("#contentArea");
   area.innerHTML = `<div class="feedPost"><div class="small">Loading feed...</div></div>`;
-
-  // load static JSON (public posts)
+  // static public posts
   let serverPosts = [];
   try {
     const res = await fetch("btd6-social.json");
-    if (res.ok) {
-      const j = await res.json();
-      serverPosts = j.posts || [];
-    }
+    if (res.ok) { const j = await res.json(); serverPosts = j.posts || []; }
   } catch(e){ console.warn("Could not load btd6-social.json", e); }
-
-  // load localPosts from server storage
-  if (!serverAvailable()) return area.innerHTML = `<div class="feedPost"><div class="small error">Server unavailable — cannot load posts.</div></div>`;
+  if (!serverAvailable()) return area.innerHTML = `<div class="feedPost"><div class="small error">Server unavailable — cannot load server posts.</div></div>`;
   try {
     localPosts = await loadServerKey(LOCAL_POSTS) || [];
     allFeedPosts = [...localPosts, ...serverPosts];
@@ -284,12 +258,9 @@ async function refreshFeed(){
     area.innerHTML = `<div class="feedPost"><div class="small error">Failed loading server posts.</div></div>`;
   }
 }
-
 function renderFeed(){
   const area = el("#contentArea");
   area.innerHTML = "";
-
-  // composer
   const box = document.createElement("div"); box.className = "feedPost";
   box.innerHTML = `
     <h3>Create a Post</h3>
@@ -303,24 +274,17 @@ function renderFeed(){
   allFeedPosts.sort((a,b)=>b.id - a.id);
   for (const p of allFeedPosts){
     const postEl = document.createElement("div"); postEl.className = "feedPost";
-
     const header = document.createElement("div"); header.className = "postHeader";
     const avatarImg = document.createElement("img"); avatarImg.className = "avatar";
     avatarImg.src = getAvatarFor(p.author);
     avatarImg.onerror = ()=>{ avatarImg.src = 'https://via.placeholder.com/100'; };
     avatarImg.addEventListener("click", (e)=>{ e.stopPropagation(); openProfile(p.author); });
-
     const authorWrap = document.createElement("div");
     authorWrap.innerHTML = `<div class="authorName"><a href="#" onclick="openPost(${p.id});return false">@${escapeHtml(p.author)}</a></div><div class="small">${escapeHtml(p.time || "")}</div>`;
-    header.appendChild(avatarImg);
-    header.appendChild(authorWrap);
-    postEl.appendChild(header);
+    header.appendChild(avatarImg); header.appendChild(authorWrap); postEl.appendChild(header);
 
     if (p.text) postEl.appendChild(Object.assign(document.createElement("div"), { innerHTML: `<p>${escapeHtml(p.text)}</p>` }));
-    if (p.image){
-      const img = document.createElement("img"); img.className="media"; img.src = p.image; img.onerror = ()=>{};
-      postEl.appendChild(img);
-    }
+    if (p.image){ const img = document.createElement("img"); img.className="media"; img.src = p.image; postEl.appendChild(img); }
     if (p.link) postEl.appendChild(Object.assign(document.createElement("div"), { innerHTML: `<p><a href="${escapeAttr(p.link)}" target="_blank">${escapeHtml(p.link)}</a></p>` }));
 
     const actions = document.createElement("div"); actions.style.marginTop = "8px";
@@ -349,13 +313,12 @@ function renderFeed(){
       });
     }
     postEl.appendChild(cmWrap);
-
     postEl.addEventListener("dblclick", ()=> openPost(p.id));
     area.appendChild(postEl);
   }
 }
 
-/* Create post: save directly to server_storage[LOCAL_POSTS] — no local fallback */
+/* Create post (server-only) */
 async function handleCreatePost(){
   if (!ensureSignedIn()) return;
   if (!serverAvailable()) return alert("Server not configured; cannot create post.");
@@ -364,31 +327,18 @@ async function handleCreatePost(){
   const file = el("#newPostImage").files[0];
   if (!text && !link && !file) return alert("Write something or add media.");
   const post = { id: Date.now(), author: currentUser.username, text, link, image: "", time: new Date().toLocaleString(), likes: [], dislikes: [], comments: [] };
-  if (file) post.image = await fileToDataURL(file); // store dataURL on server
+  if (file) post.image = await fileToDataURL(file);
   try {
     const data = await serverFetchRoom();
     data.server_storage = data.server_storage || {};
     data.server_storage[LOCAL_POSTS] = data.server_storage[LOCAL_POSTS] || [];
     data.server_storage[LOCAL_POSTS].unshift(post);
     await serverSaveRoom(data);
-    // reload
     await refreshFeed();
     el("#newPostText").value=""; el("#newPostLink").value=""; el("#newPostImage").value="";
-  } catch (e) {
-    console.error(e);
-    alert("Failed to save post to server.");
-  }
-}
-function fileToDataURL(file){
-  return new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload = () => res(r.result);
-    r.onerror = e => rej(e);
-    r.readAsDataURL(file);
-  });
+  } catch(e){ console.error(e); alert("Failed to save post to server."); }
 }
 
-/* Like/dislike/comment/delete/share (all modify server_storage[LOCAL_POSTS] when applicable) */
 async function toggleLike(id,type){
   if (!serverAvailable()) return alert("Server not configured; cannot update likes.");
   try {
@@ -396,33 +346,27 @@ async function toggleLike(id,type){
     data.server_storage = data.server_storage || {};
     const posts = data.server_storage[LOCAL_POSTS] || [];
     const p = posts.find(x=>x.id===id);
-    if (!p) return alert("Post not editable (may be static server post).");
+    if (!p) return alert("Post not editable (may be static).");
     p.likes = p.likes || []; p.dislikes = p.dislikes || [];
     const me = currentUser.username;
     if (type==="like"){ if (p.likes.includes(me)) p.likes = p.likes.filter(u=>u!==me); else { p.likes.push(me); p.dislikes = p.dislikes.filter(u=>u!==me); } }
     else { if (p.dislikes.includes(me)) p.dislikes = p.dislikes.filter(u=>u!==me); else { p.dislikes.push(me); p.likes = p.likes.filter(u=>u!==me); } }
-    await serverSaveRoom(data);
-    await refreshFeed();
+    await serverSaveRoom(data); await refreshFeed();
   } catch(e){ console.error(e); alert("Failed to update like on server."); }
 }
-
 async function promptComment(id){
   if (!serverAvailable()) return alert("Server not configured; cannot comment.");
-  const t = prompt("Enter comment:");
-  if (!t) return;
+  const t = prompt("Enter comment:"); if (!t) return;
   try {
     const data = await serverFetchRoom();
     data.server_storage = data.server_storage || {};
     const posts = data.server_storage[LOCAL_POSTS] || [];
     const p = posts.find(x=>x.id===id);
     if (!p) return alert("Post not editable.");
-    p.comments = p.comments || [];
-    p.comments.push({ author: currentUser.username, text: t, time: new Date().toLocaleTimeString() });
-    await serverSaveRoom(data);
-    await refreshFeed();
+    p.comments = p.comments || []; p.comments.push({ author: currentUser.username, text: t, time: new Date().toLocaleTimeString() });
+    await serverSaveRoom(data); await refreshFeed();
   } catch(e){ console.error(e); alert("Failed to save comment to server."); }
 }
-
 async function deletePost(id){
   if (!confirm("Delete this post?")) return;
   if (!serverAvailable()) return alert("Server not configured; cannot delete post.");
@@ -430,275 +374,39 @@ async function deletePost(id){
     const data = await serverFetchRoom();
     data.server_storage = data.server_storage || {};
     data.server_storage[LOCAL_POSTS] = (data.server_storage[LOCAL_POSTS] || []).filter(p => p.id !== id);
-    await serverSaveRoom(data);
-    await refreshFeed();
+    await serverSaveRoom(data); await refreshFeed();
   } catch(e){ console.error(e); alert("Failed to delete post on server."); }
 }
-
-function sharePost(id){
-  const url = window.location.origin + window.location.pathname + "?post=" + id;
-  navigator.clipboard.writeText(url).then(()=> alert("Link copied!"), ()=> alert("Could not copy link."));
-}
-
-/* Standalone post view */
+function sharePost(id){ const url = window.location.origin + window.location.pathname + "?post=" + id; navigator.clipboard.writeText(url).then(()=> alert("Link copied!"), ()=> alert("Could not copy link.")); }
 async function openPost(id){
-  // load latest posts then show
-  try {
-    await refreshFeed();
-    const p = allFeedPosts.find(x=>x.id === id);
-    if (!p) return alert("Post not found");
-    history.replaceState({}, "", window.location.pathname + "?post=" + id);
-    const area = el("#contentArea"); area.innerHTML = "";
-    const postEl = document.createElement("div"); postEl.className = "feedPost";
+  try { await refreshFeed(); const p = allFeedPosts.find(x=>x.id===id); if (!p) return alert("Post not found"); history.replaceState({}, "", window.location.pathname + "?post=" + id); const area = el("#contentArea"); area.innerHTML = ""; const postEl = document.createElement("div"); postEl.className = "feedPost"; const header = document.createElement("div"); header.className = "postHeader"; const avatarImg = document.createElement("img"); avatarImg.className = "avatar"; avatarImg.src = getAvatarFor(p.author); avatarImg.onerror = ()=>{ avatarImg.src = 'https://via.placeholder.com/100';}; const authorWrap = document.createElement("div"); authorWrap.innerHTML = `<div class="authorName">@${escapeHtml(p.author)}</div><div class="small">${escapeHtml(p.time || "")}</div>`; header.appendChild(avatarImg); header.appendChild(authorWrap); postEl.appendChild(header); if (p.text) postEl.appendChild(Object.assign(document.createElement("div"), { innerHTML: `<p>${escapeHtml(p.text)}</p>` })); if (p.image) { const img = document.createElement("img"); img.className="media"; img.src = p.image; postEl.appendChild(img);} if (p.link) postEl.appendChild(Object.assign(document.createElement("div"), { innerHTML: `<p><a href="${escapeAttr(p.link)}" target="_blank">${escapeHtml(p.link)}</a></p>` })); const actions = document.createElement("div"); actions.style.marginTop = "8px"; const backBtn = document.createElement("button"); backBtn.className="smallBtn"; backBtn.textContent = "← Back"; backBtn.addEventListener("click", ()=> { history.replaceState({}, "", window.location.pathname); refreshFeed(); }); const likeBtn = document.createElement("button"); likeBtn.className="action"; likeBtn.textContent = `👍 ${ (p.likes||[]).length }`; likeBtn.addEventListener("click", ()=> toggleLike(p.id,'like')); const disBtn = document.createElement("button"); disBtn.className="action"; disBtn.textContent = `👎 ${ (p.dislikes||[]).length }`; disBtn.addEventListener("click", ()=> toggleLike(p.id,'dislike')); const comBtn = document.createElement("button"); comBtn.className="action"; comBtn.textContent = `💬 ${ (p.comments||[]).length }`; comBtn.addEventListener("click", ()=> promptComment(p.id)); const shareBtn = document.createElement("button"); shareBtn.className="action"; shareBtn.textContent = "🔗 Share"; shareBtn.addEventListener("click", ()=> sharePost(p.id)); actions.appendChild(backBtn); actions.appendChild(likeBtn); actions.appendChild(disBtn); actions.appendChild(comBtn); actions.appendChild(shareBtn); if (currentUser && p.author === currentUser.username){ const del = document.createElement("button"); del.className="danger"; del.textContent="🗑 Delete"; del.addEventListener("click", ()=> { if (confirm("Delete this post?")) { deletePost(p.id); history.replaceState({}, "", window.location.pathname); refreshFeed(); }}); actions.appendChild(del);} postEl.appendChild(actions); const commentsWrap = document.createElement("div"); commentsWrap.style.marginTop="10px"; commentsWrap.innerHTML = `<h4>Comments</h4>`; if (p.comments && p.comments.length){ p.comments.forEach(c=>{ const cd = document.createElement("div"); cd.className="small"; cd.style.marginBottom="6px"; cd.innerHTML = `<b>${escapeHtml(c.author)}</b>: ${escapeHtml(c.text)} <div class="small">${escapeHtml(c.time||"")}</div>`; commentsWrap.appendChild(cd); }); } else { const none = document.createElement("div"); none.className="small"; none.textContent = "No comments yet."; commentsWrap.appendChild(none);} const commentBox = document.createElement("div"); commentBox.style.marginTop="8px"; commentBox.innerHTML = `<input id="singlePostComment" placeholder="Write a comment..." style="width:70%"><button class="action" id="singlePostCommentBtn">Post</button>`; commentBox.querySelector("#singlePostCommentBtn").addEventListener("click", async ()=> { const txt = commentBox.querySelector("#singlePostComment").value.trim(); if (!txt) return alert("Write a comment"); await promptComment(p.id); openPost(p.id); }); postEl.appendChild(commentsWrap); postEl.appendChild(commentBox); area.appendChild(postEl); } catch(e){ console.error(e); alert("Failed loading post."); } }
 
-    const header = document.createElement("div"); header.className = "postHeader";
-    const avatarImg = document.createElement("img"); avatarImg.className = "avatar";
-    avatarImg.src = getAvatarFor(p.author); avatarImg.onerror = ()=>{ avatarImg.src = 'https://via.placeholder.com/100';};
-    const authorWrap = document.createElement("div");
-    authorWrap.innerHTML = `<div class="authorName">@${escapeHtml(p.author)}</div><div class="small">${escapeHtml(p.time || "")}</div>`;
-    header.appendChild(avatarImg); header.appendChild(authorWrap); postEl.appendChild(header);
+/* ============ Threads ============ */
+async function loadThreads(){ if (!ensureSignedIn()) return; await refreshThreads(); }
+async function refreshThreads(){ const area = el("#contentArea"); area.innerHTML = `<div class="feedPost"><div class="small">Loading threads...</div></div>`; if (!serverAvailable()) return area.innerHTML = `<div class="feedPost"><div class="small error">Server unavailable — cannot load threads.</div></div>`; try { const data = await serverFetchRoom(); const threads = data.threads || []; renderThreads(threads); } catch(e){ console.error(e); area.innerHTML = `<div class="feedPost"><div class="small error">Failed to load threads.</div></div>`; } }
+function renderThreads(threads){ const area = el("#contentArea"); area.innerHTML = `<div class="feedPost"><h3>Create a Thread</h3><input id="threadTitle" placeholder="Thread title" style="margin-top:8px"><textarea id="threadBody" placeholder="Thread content" style="height:70px;margin-top:8px"></textarea><div style="margin-top:8px"><button class="action" onclick="createThread()">Create</button></div></div>`; threads.sort((a,b)=>b.id - a.id); threads.forEach(t=>{ const d = document.createElement("div"); d.className = "feedPost"; let inner = `<h4>${escapeHtml(t.title)}</h4><div class="small">by ${escapeHtml(t.author)}${t.time ? " • " + escapeHtml(t.time) : ""}</div>`; if (t.text) inner += `<p>${escapeHtml(t.text)}</p>`; inner += `<div style="margin-top:8px"><button class="action" onclick="replyThread(${t.id})">💬 ${ (t.replies||[]).length }</button></div>`; if (t.replies && t.replies.length){ inner += `<div style="margin-top:8px;border-top:1px solid #333;padding-top:6px">`; t.replies.forEach(r=>{ inner += `<div style="margin-left:8px" class="small"><b>${escapeHtml(r.author)}</b>: ${escapeHtml(r.text)}</div>`; }); inner += `</div>`; } d.innerHTML = inner; area.appendChild(d); }); }
+async function createThread(){ if (!serverAvailable()) return alert("Server not configured; cannot create thread."); const title = el("#threadTitle").value.trim(); const text = el("#threadBody").value.trim(); if (!title || !text) return alert("Enter title and text"); try { const data = await serverFetchRoom(); data.threads = data.threads || []; data.threads.unshift({ id: Date.now(), author: currentUser.username, title, text, replies: [], time: new Date().toLocaleString() }); await serverSaveRoom(data); await refreshThreads(); } catch(e){ console.error(e); alert("Could not create thread (server error)."); } }
+async function replyThread(id){ if (!serverAvailable()) return alert("Server not configured; cannot reply."); const txt = prompt("Reply:"); if (!txt) return; try { const data = await serverFetchRoom(); data.threads = data.threads || []; const t = data.threads.find(x=>x.id===id); if (!t) return alert("Thread not found on server."); t.replies = t.replies || []; t.replies.push({ author: currentUser.username, text: txt, time: new Date().toLocaleTimeString() }); await serverSaveRoom(data); await refreshThreads(); } catch(e){ console.error(e); alert("Could not reply (server error)."); } }
 
-    if (p.text) postEl.appendChild(Object.assign(document.createElement("div"), { innerHTML: `<p>${escapeHtml(p.text)}</p>` }));
-    if (p.image){ const img = document.createElement("img"); img.className="media"; img.src = p.image; postEl.appendChild(img); }
-    if (p.link) postEl.appendChild(Object.assign(document.createElement("div"), { innerHTML: `<p><a href="${escapeAttr(p.link)}" target="_blank">${escapeHtml(p.link)}</a></p>` }));
-
-    const actions = document.createElement("div"); actions.style.marginTop = "8px";
-    const backBtn = document.createElement("button"); backBtn.className="smallBtn"; backBtn.textContent = "← Back";
-    backBtn.addEventListener("click", ()=> { history.replaceState({}, "", window.location.pathname); refreshFeed(); });
-    const likeBtn = document.createElement("button"); likeBtn.className="action"; likeBtn.textContent = `👍 ${ (p.likes||[]).length }`;
-    likeBtn.addEventListener("click", ()=> toggleLike(p.id,'like'));
-    const disBtn = document.createElement("button"); disBtn.className="action"; disBtn.textContent = `👎 ${ (p.dislikes||[]).length }`;
-    disBtn.addEventListener("click", ()=> toggleLike(p.id,'dislike'));
-    const comBtn = document.createElement("button"); comBtn.className="action"; comBtn.textContent = `💬 ${ (p.comments||[]).length }`;
-    comBtn.addEventListener("click", ()=> promptComment(p.id));
-    const shareBtn = document.createElement("button"); shareBtn.className="action"; shareBtn.textContent = "🔗 Share";
-    shareBtn.addEventListener("click", ()=> sharePost(p.id));
-    actions.appendChild(backBtn); actions.appendChild(likeBtn); actions.appendChild(disBtn); actions.appendChild(comBtn); actions.appendChild(shareBtn);
-    if (currentUser && p.author === currentUser.username){
-      const del = document.createElement("button"); del.className="danger"; del.textContent="🗑 Delete";
-      del.addEventListener("click", ()=> { if (confirm("Delete this post?")) { deletePost(p.id); history.replaceState({}, "", window.location.pathname); refreshFeed(); }});
-      actions.appendChild(del);
-    }
-    postEl.appendChild(actions);
-
-    const commentsWrap = document.createElement("div"); commentsWrap.style.marginTop="10px"; commentsWrap.innerHTML = `<h4>Comments</h4>`;
-    if (p.comments && p.comments.length){
-      p.comments.forEach(c=>{
-        const cd = document.createElement("div"); cd.className="small"; cd.style.marginBottom="6px";
-        cd.innerHTML = `<b>${escapeHtml(c.author)}</b>: ${escapeHtml(c.text)} <div class="small">${escapeHtml(c.time||"")}</div>`;
-        commentsWrap.appendChild(cd);
-      });
-    } else {
-      const none = document.createElement("div"); none.className="small"; none.textContent = "No comments yet.";
-      commentsWrap.appendChild(none);
-    }
-    const commentBox = document.createElement("div"); commentBox.style.marginTop="8px";
-    commentBox.innerHTML = `<input id="singlePostComment" placeholder="Write a comment..." style="width:70%"><button class="action" id="singlePostCommentBtn">Post</button>`;
-    commentBox.querySelector("#singlePostCommentBtn").addEventListener("click", async ()=> {
-      const txt = commentBox.querySelector("#singlePostComment").value.trim();
-      if (!txt) return alert("Write a comment");
-      // delegate to promptComment flow that persists to server
-      await promptComment(p.id);
-      openPost(p.id);
-    });
-    postEl.appendChild(commentsWrap); postEl.appendChild(commentBox);
-    area.appendChild(postEl);
-  } catch(e){
-    console.error(e);
-    alert("Failed loading post.");
-  }
-}
-
-/* ============ Threads (server-synced) ============ */
-async function loadThreads(){
-  if (!ensureSignedIn()) return;
-  await refreshThreads();
-}
-async function refreshThreads(){
-  const area = el("#contentArea"); area.innerHTML = `<div class="feedPost"><div class="small">Loading threads...</div></div>`;
-  if (!serverAvailable()) return area.innerHTML = `<div class="feedPost"><div class="small error">Server unavailable — cannot load threads.</div></div>`;
-  try {
-    const data = await serverFetchRoom();
-    const threads = data.threads || [];
-    renderThreads(threads);
-  } catch(e){ console.error(e); area.innerHTML = `<div class="feedPost"><div class="small error">Failed to load threads.</div></div>`; }
-}
-function renderThreads(threads){
-  const area = el("#contentArea");
-  area.innerHTML = `
-    <div class="feedPost">
-      <h3>Create a Thread</h3>
-      <input id="threadTitle" placeholder="Thread title" style="margin-top:8px">
-      <textarea id="threadBody" placeholder="Thread content" style="height:70px;margin-top:8px"></textarea>
-      <div style="margin-top:8px"><button class="action" onclick="createThread()">Create</button></div>
-    </div>
-  `;
-  threads.sort((a,b)=>b.id - a.id);
-  threads.forEach(t=>{
-    const d = document.createElement("div"); d.className = "feedPost";
-    let inner = `<h4>${escapeHtml(t.title)}</h4><div class="small">by ${escapeHtml(t.author)}${t.time ? " • " + escapeHtml(t.time) : ""}</div>`;
-    if (t.text) inner += `<p>${escapeHtml(t.text)}</p>`;
-    inner += `<div style="margin-top:8px"><button class="action" onclick="replyThread(${t.id})">💬 ${ (t.replies||[]).length }</button></div>`;
-    if (t.replies && t.replies.length){
-      inner += `<div style="margin-top:8px;border-top:1px solid #333;padding-top:6px">`;
-      t.replies.forEach(r=>{ inner += `<div style="margin-left:8px" class="small"><b>${escapeHtml(r.author)}</b>: ${escapeHtml(r.text)}</div>`; });
-      inner += `</div>`;
-    }
-    d.innerHTML = inner;
-    area.appendChild(d);
-  });
-}
-async function createThread(){
-  if (!serverAvailable()) return alert("Server not configured; cannot create thread.");
-  const title = el("#threadTitle").value.trim();
-  const text = el("#threadBody").value.trim();
-  if (!title || !text) return alert("Enter title and text");
-  try {
-    const data = await serverFetchRoom();
-    data.threads = data.threads || [];
-    data.threads.unshift({ id: Date.now(), author: currentUser.username, title, text, replies: [], time: new Date().toLocaleString() });
-    await serverSaveRoom(data);
-    await refreshThreads();
-  } catch(e){ console.error(e); alert("Could not create thread (server error)."); }
-}
-async function replyThread(id){
-  if (!serverAvailable()) return alert("Server not configured; cannot reply.");
-  const txt = prompt("Reply:");
-  if (!txt) return;
-  try {
-    const data = await serverFetchRoom();
-    data.threads = data.threads || [];
-    const t = data.threads.find(x=>x.id===id);
-    if (!t) return alert("Thread not found on server.");
-    t.replies = t.replies || [];
-    t.replies.push({ author: currentUser.username, text: txt, time: new Date().toLocaleTimeString() });
-    await serverSaveRoom(data);
-    await refreshThreads();
-  } catch(e){ console.error(e); alert("Could not reply (server error)."); }
-}
-
-/* ================= DMs (server-side storage) ================= */
-async function loadDMList(){
-  if (!ensureSignedIn()) return;
-  if (!serverAvailable()) return el("#contentArea").innerHTML = `<div class="feedPost"><div class="small error">Server unavailable — cannot load messages.</div></div>`;
-  try {
-    const dms = await loadServerKey(LOCAL_DMS) || {};
-    const area = el("#contentArea");
-    let html = `<div class="feedPost"><h3>Messages</h3>`;
-    const users = Object.keys(dms).sort();
-    if (users.length === 0) html += `<div class="small">No conversations yet</div>`;
-    for (const u of users){
-      const unread = dms[u].some(m => !m.read) ? " 🔴" : "";
-      html += `<div style="margin-bottom:6px"><a href="#" onclick="openDM('${escapeAttr(u)}');return false">@${escapeHtml(u)}</a>${unread}</div>`;
-    }
-    html += `<div style="margin-top:8px"><input id="newDMUser" placeholder="User"><button class="action" onclick="openNewDM()">Start Chat</button></div>`;
-    html += `</div>`;
-    area.innerHTML = html;
-  } catch(e){ console.error(e); el("#contentArea").innerHTML = `<div class="feedPost"><div class="small error">Failed to load messages.</div></div>`; }
-}
-
+/* ============ DMs ============ */
+async function loadDMList(){ if (!ensureSignedIn()) return; if (!serverAvailable()) return el("#contentArea").innerHTML = `<div class="feedPost"><div class="small error">Server unavailable — cannot load messages.</div></div>`; try { const dms = await loadServerKey(LOCAL_DMS) || {}; const area = el("#contentArea"); let html = `<div class="feedPost"><h3>Messages</h3>`; const users = Object.keys(dms).sort(); if (users.length === 0) html += `<div class="small">No conversations yet</div>`; for (const u of users){ const unread = dms[u].some(m => !m.read) ? " 🔴" : ""; html += `<div style="margin-bottom:6px"><a href="#" onclick="openDM('${escapeAttr(u)}');return false">@${escapeHtml(u)}</a>${unread}</div>`; } html += `<div style="margin-top:8px"><input id="newDMUser" placeholder="User"><button class="action" onclick="openNewDM()">Start Chat</button></div>`; html += `</div>`; area.innerHTML = html; } catch(e){ console.error(e); el("#contentArea").innerHTML = `<div class="feedPost"><div class="small error">Failed to load messages.</div></div>`; } }
 function openNewDM(){ const u = el("#newDMUser").value.trim(); if (!u) return alert("Enter username"); openDM(u); }
+async function openDM(user){ if (!ensureSignedIn()) return; if (!serverAvailable()) return el("#contentArea").innerHTML = `<div class="feedPost"><div class="small error">Server unavailable — cannot open chat.</div></div>`; try { const dms = await loadServerKey(LOCAL_DMS) || {}; dms[user] = dms[user] || []; dms[user].forEach(m => m.read = true); await saveServerKey(LOCAL_DMS, dms); let html = `<div class="feedPost"><h3>Chat — @${escapeHtml(user)}</h3><div id="dmMsgs" style="height:300px;overflow-y:auto;border:1px solid #333;padding:6px">`; dms[user].forEach(m => html += `<div style="margin-bottom:6px"><b>${escapeHtml(m.from)}</b>: ${escapeHtml(m.text)} <div class="small">${escapeHtml(m.time||"")}</div></div>`); html += `</div><div style="margin-top:8px"><input id="dmText" placeholder="Message" style="width:70%"><button class="action" onclick="sendDM('${escapeAttr(user)}')">Send</button> <button onclick="loadDMList()">← Back</button></div></div>`; el("#contentArea").innerHTML = html; } catch(e){ console.error(e); alert("Failed to open chat."); } }
+async function sendDM(user){ if (!ensureSignedIn()) return; if (!serverAvailable()) return alert("Server unavailable — cannot send message."); const txt = el("#dmText").value.trim(); if (!txt) return; try { const dms = await loadServerKey(LOCAL_DMS) || {}; dms[user] = dms[user] || []; dms[user].push({ from: currentUser.username, to: user, text: txt, time: new Date().toLocaleTimeString(), read: false }); await saveServerKey(LOCAL_DMS, dms); openDM(user); } catch(e){ console.error(e); alert("Failed to send message."); } }
 
-async function openDM(user){
-  if (!ensureSignedIn()) return;
-  if (!serverAvailable()) return el("#contentArea").innerHTML = `<div class="feedPost"><div class="small error">Server unavailable — cannot open chat.</div></div>`;
-  try {
-    const dms = await loadServerKey(LOCAL_DMS) || {};
-    dms[user] = dms[user] || [];
-    // mark read on server
-    dms[user].forEach(m => m.read = true);
-    await saveServerKey(LOCAL_DMS, dms);
-    let html = `<div class="feedPost"><h3>Chat — @${escapeHtml(user)}</h3><div id="dmMsgs" style="height:300px;overflow-y:auto;border:1px solid #333;padding:6px">`;
-    dms[user].forEach(m => html += `<div style="margin-bottom:6px"><b>${escapeHtml(m.from)}</b>: ${escapeHtml(m.text)} <div class="small">${escapeHtml(m.time||"")}</div></div>`);
-    html += `</div><div style="margin-top:8px"><input id="dmText" placeholder="Message" style="width:70%"><button class="action" onclick="sendDM('${escapeAttr(user)}')">Send</button> <button onclick="loadDMList()">← Back</button></div></div>`;
-    el("#contentArea").innerHTML = html;
-  } catch(e){ console.error(e); alert("Failed to open chat."); }
-}
+/* ============ Profile ============ */
+async function loadProfile(){ if (!ensureSignedIn()) return; if (!serverAvailable()) return el("#contentArea").innerHTML = `<div class="feedPost"><div class="small error">Server unavailable — cannot load profile.</div></div>`; try { usersMap = await loadServerKey(USERS_KEY) || {}; const u = currentUser; el("#contentArea").innerHTML = `<div class="feedPost" style="text-align:center"><h3>Your Profile</h3><img id="profileAvatar" src="${escapeAttr((u && u.avatar) || 'https://via.placeholder.com/100')}" style="width:100px;height:100px;border-radius:50%;object-fit:cover"><br><input type="file" id="avatarUpload" accept="image/*" style="margin-top:8px"><p><b>Username</b><br><input id="profileName" value="${escapeAttr((u && u.username) || '')}" style="width:60%"></p><p><b>Password</b><br><input id="profilePass" type="password" value="${escapeAttr((u && u.password) || '')}" style="width:60%"></p><p><b>Bio</b><br><textarea id="profileBio" style="width:80%;height:80px">${escapeHtml((u && u.bio) || '')}</textarea></p><div style="margin-top:8px"><button class="action" onclick="saveProfile()">Save</button></div></div>`; el("#avatarUpload").onchange = async e => { const f = e.target.files[0]; if (!f) return; const d = await fileToDataURL(f); el("#profileAvatar").src = d; currentUser.avatar = d; }; } catch(e){ console.error(e); el("#contentArea").innerHTML = `<div class="feedPost"><div class="small error">Failed to load profile.</div></div>`; } }
+async function saveProfile(){ if (!ensureSignedIn()) return; if (!serverAvailable()) return alert("Server unavailable — cannot save profile."); try { currentUser.username = el("#profileName").value.trim() || currentUser.username; currentUser.password = el("#profilePass").value || currentUser.password; currentUser.bio = el("#profileBio").value.trim() || currentUser.bio; usersMap = await loadServerKey(USERS_KEY) || {}; usersMap[currentUser.username] = usersMap[currentUser.username] || {}; usersMap[currentUser.username].password = currentUser.password; usersMap[currentUser.username].bio = currentUser.bio; usersMap[currentUser.username].avatar = currentUser.avatar || usersMap[currentUser.username].avatar || ""; await saveServerKey(USERS_KEY, usersMap); await saveServerKey(PROFILE_KEY, currentUser); alert("Profile saved on server."); setSignedInUI(); } catch(e){ console.error(e); alert("Failed to save profile on server."); } }
+function openProfile(username){ (async ()=> { try { await refreshFeed(); const posts = allFeedPosts.filter(p => p.author === username); let html = `<div class="feedPost" style="text-align:center"><h3>@${escapeHtml(username)}</h3><p class="small">User profile</p><button onclick="switchTab('feed')">← Back</button></div>`; posts.forEach(p => html += makeMiniPostHTML(p)); el("#contentArea").innerHTML = html; } catch(e){ console.error(e); alert("Failed to open profile."); } })(); }
+function makeMiniPostHTML(p){ const div = document.createElement("div"); div.className="feedPost"; let inner = `<div>${escapeHtml(p.text||"")}</div><div class="small">${escapeHtml(p.time||"")}</div>`; div.innerHTML = inner; return div.outerHTML; }
 
-async function sendDM(user){
-  if (!ensureSignedIn()) return;
-  if (!serverAvailable()) return alert("Server unavailable — cannot send message.");
-  const txt = el("#dmText").value.trim();
-  if (!txt) return;
-  try {
-    const dms = await loadServerKey(LOCAL_DMS) || {};
-    dms[user] = dms[user] || [];
-    dms[user].push({ from: currentUser.username, to: user, text: txt, time: new Date().toLocaleTimeString(), read: false });
-    await saveServerKey(LOCAL_DMS, dms);
-    openDM(user);
-  } catch(e){ console.error(e); alert("Failed to send message."); }
-}
-
-/* ================= Profile UI (server-side users map) ================= */
-async function loadProfile(){
-  if (!ensureSignedIn()) return;
-  if (!serverAvailable()) return el("#contentArea").innerHTML = `<div class="feedPost"><div class="small error">Server unavailable — cannot load profile.</div></div>`;
-  try {
-    usersMap = await loadServerKey(USERS_KEY) || {};
-    const u = currentUser;
-    el("#contentArea").innerHTML = `
-      <div class="feedPost" style="text-align:center">
-        <h3>Your Profile</h3>
-        <img id="profileAvatar" src="${escapeAttr((u && u.avatar) || 'https://via.placeholder.com/100')}" style="width:100px;height:100px;border-radius:50%;object-fit:cover"><br>
-        <input type="file" id="avatarUpload" accept="image/*" style="margin-top:8px">
-        <p><b>Username</b><br><input id="profileName" value="${escapeAttr((u && u.username) || '')}" style="width:60%"></p>
-        <p><b>Password</b><br><input id="profilePass" type="password" value="${escapeAttr((u && u.password) || '')}" style="width:60%"></p>
-        <p><b>Bio</b><br><textarea id="profileBio" style="width:80%;height:80px">${escapeHtml((u && u.bio) || '')}</textarea></p>
-        <div style="margin-top:8px"><button class="action" onclick="saveProfile()">Save</button></div>
-      </div>
-    `;
-    el("#avatarUpload").onchange = async e => {
-      const f = e.target.files[0]; if (!f) return;
-      const d = await fileToDataURL(f);
-      el("#profileAvatar").src = d;
-      currentUser.avatar = d;
-    };
-  } catch(e){ console.error(e); el("#contentArea").innerHTML = `<div class="feedPost"><div class="small error">Failed to load profile.</div></div>`; }
-}
-
-async function saveProfile(){
-  if (!ensureSignedIn()) return;
-  if (!serverAvailable()) return alert("Server unavailable — cannot save profile.");
-  try {
-    currentUser.username = el("#profileName").value.trim() || currentUser.username;
-    currentUser.password = el("#profilePass").value || currentUser.password;
-    currentUser.bio = el("#profileBio").value.trim() || currentUser.bio;
-    // ensure usersMap updated and saved
-    usersMap = await loadServerKey(USERS_KEY) || {};
-    usersMap[currentUser.username] = usersMap[currentUser.username] || {};
-    usersMap[currentUser.username].password = currentUser.password;
-    usersMap[currentUser.username].bio = currentUser.bio;
-    usersMap[currentUser.username].avatar = currentUser.avatar || usersMap[currentUser.username].avatar || "";
-    await saveServerKey(USERS_KEY, usersMap);
-    // optionally save PROFILE_KEY (global)
-    await saveServerKey(PROFILE_KEY, currentUser);
-    alert("Profile saved on server.");
-    setSignedInUI();
-  } catch(e){ console.error(e); alert("Failed to save profile on server."); }
-}
-
-function openProfile(username){
-  // show profile and posts search; posts are loaded from server feed
-  (async ()=> {
-    try {
-      await refreshFeed();
-      const posts = allFeedPosts.filter(p => p.author === username);
-      let html = `<div class="feedPost" style="text-align:center"><h3>@${escapeHtml(username)}</h3><p class="small">User profile</p><button onclick="switchTab('feed')">← Back</button></div>`;
-      posts.forEach(p => html += makeMiniPostHTML(p));
-      el("#contentArea").innerHTML = html;
-    } catch(e){ console.error(e); alert("Failed to open profile."); }
-  })();
-}
-function makeMiniPostHTML(p){
-  const div = document.createElement("div"); div.className="feedPost";
-  let inner = `<div>${escapeHtml(p.text||"")}</div><div class="small">${escapeHtml(p.time||"")}</div>`;
-  div.innerHTML = inner;
-  return div.outerHTML;
-}
-
-/* ================= Navigation helpers ================= */
+/* ============ Navigation & auth gating ============ */
 function switchTab(tab){
-  if (!ensureSignedIn()) return;
+  // if not signed in, show auth overlay and do nothing else
+  if (!ensureSignedIn()){
+    showAuthOverlay();
+    return;
+  }
   qAll("#navTabs button").forEach(b => b.classList.remove("active"));
   const btn = qAll("#navTabs button").find(b => (b.getAttribute("data-tab")||b.textContent.toLowerCase()) === tab);
   if (btn) btn.classList.add("active");
@@ -707,51 +415,52 @@ function switchTab(tab){
   else if (tab === "messages") loadDMList();
   else if (tab === "profile") loadProfile();
 }
+function ensureSignedIn(){ if (!currentUser || !currentUser.username){ showAuthOverlay(); setSignedInUI(); return false; } hideAuthOverlay(); setSignedInUI(); return true; }
 
-/* ensure signed in (checks in-memory currentUser) */
-function ensureSignedIn(){
-  if (!currentUser || !currentUser.username){
-    showAuthOverlay();
-    setSignedInUI();
-    return false;
-  }
-  hideAuthOverlay();
-  setSignedInUI();
-  return true;
-}
-
-/* ================= Init ================= */
+/* ============ Init wiring ============ */
 (async function init(){
+  // load tunnel config
   await loadConfig();
-  // Attempt to pre-load server users & posts to populate UI (but do not set a client session)
-  try {
-    usersMap = serverAvailable() ? (await loadServerKey(USERS_KEY) || {}) : {};
-    localPosts = serverAvailable() ? (await loadServerKey(LOCAL_POSTS) || []) : [];
-  } catch(e){ console.warn("Init server preload failed:", e); }
 
-  // no local session: user must log in each time or server may store a PROFILE_KEY (but we don't auto-login)
+  // attach buttons (login/register) safely after DOM is ready
+  document.getElementById("loginBtn").addEventListener("click", doLogin);
+  document.getElementById("showRegisterBtn").addEventListener("click", showRegister);
+  document.getElementById("regBtn").addEventListener("click", doRegister);
+  document.getElementById("showLoginBtn").addEventListener("click", showLogin);
+
+  // attach tab clicks (robust: re-check if listeners already exist)
+  qAll("#navTabs button").forEach(btn => {
+    btn.removeEventListener("click", btn._tabHandler);
+    btn._tabHandler = () => {
+      const tab = btn.getAttribute("data-tab") || btn.textContent.toLowerCase();
+      switchTab(tab);
+    };
+    btn.addEventListener("click", btn._tabHandler);
+  });
+
+  // expose functions to window for debug/inline calls
+  window.openProfile = openProfile;
+  window.openPost = openPost;
+  window.refreshFeed = refreshFeed;
+  window.refreshThreads = refreshThreads;
+  window.replyThread = replyThread;
+
+  // initial UI
   setSignedInUI();
 
-  // If query param ?post= is present, still allow trying to open that post after loading feed (requires server)
+  // if ?post= present try to open after loading feed (server required)
   const params = new URLSearchParams(window.location.search);
   if (params.has("post")) {
     if (serverAvailable()) {
-      try { await refreshFeed(); const pid = Number(params.get("post")); if (!isNaN(pid)) openPost(pid); else switchTab("feed"); }
-      catch(e){ switchTab("feed"); }
+      try { await refreshFeed(); const pid = Number(params.get("post")); if (!isNaN(pid)) openPost(pid); else switchTab("feed"); } catch(e){ switchTab("feed"); }
     } else {
       switchTab("feed");
     }
   } else {
+    // default to feed tab (but will show auth overlay if not signed in)
     switchTab("feed");
   }
 })();
-
-/* expose helpers for inline usage */
-window.openProfile = openProfile;
-window.openPost = openPost;
-window.refreshFeed = refreshFeed;
-window.refreshThreads = refreshThreads;
-window.replyThread = replyThread;
 </script>
 </body>
 </html>
