@@ -116,43 +116,74 @@ const qAll = s => Array.from(document.querySelectorAll(s));
 function escapeHtml(s){ if (s===undefined || s===null) return ""; return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c]); }
 function escapeAttr(s){ return String(s).replace(/"/g,'&quot;'); }
 
-/* ============ Server / room helpers ============ */
+/* ============ Server / room helpers (store under /server_data) ============ */
 async function loadConfig(){
   try {
     const r = await fetch("tunnel.txt");
     if (r.ok) {
       SERVER_URL = (await r.text()).trim();
-      if (SERVER_URL.endsWith("/")) SERVER_URL = SERVER_URL.slice(0,-1);
+      if (SERVER_URL.endsWith("/")) SERVER_URL = SERVER_URL.slice(0, -1);
       console.log("SERVER_URL =", SERVER_URL);
     }
-  } catch(e){
+  } catch (e) {
     console.warn("tunnel.txt not found or failed to load.");
   }
 }
+
 function serverAvailable(){ return !!SERVER_URL; }
 
+/* Fetch the shared data file from /server_data */
 async function serverFetchRoom(){
   if (!SERVER_URL) throw new Error("SERVER_URL not configured");
-  const res = await fetch(`${SERVER_URL}/room/${ROOM}?key=${KEY}`);
+
+  const url = `${SERVER_URL}/server_data/${ROOM}.json?key=${KEY}`;
+  const res = await fetch(url);
+  
+  // If file doesn’t exist yet, create it
+  if (res.status === 404) {
+    console.log("No existing data file — creating new:", `${ROOM}.json`);
+    const empty = { server_storage: {} };
+    await serverSaveRoom(empty);
+    return empty;
+  }
+
   if (!res.ok) throw new Error("server fetch failed");
-  const json = await res.json();
-  if (!json.ok) throw new Error("server returned not ok");
-  return json.data || {};
+
+  try {
+    const json = await res.json();
+    return json || { server_storage: {} };
+  } catch (e) {
+    console.warn("Invalid JSON from server_data, resetting", e);
+    const empty = { server_storage: {} };
+    await serverSaveRoom(empty);
+    return empty;
+  }
 }
+
+/* Save updates to /server_data */
 async function serverSaveRoom(data){
   if (!SERVER_URL) throw new Error("SERVER_URL not configured");
-  const res = await fetch(`${SERVER_URL}/room/${ROOM}?key=${KEY}`, {
+  const url = `${SERVER_URL}/server_data/${ROOM}.json?key=${KEY}`;
+  const payload = JSON.stringify(data, null, 2);
+
+  const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data)
+    body: payload
   });
+
   if (!res.ok) throw new Error("server save failed");
-  try { return await res.json(); } catch(e){ return null; }
+  return true;
 }
+
+/* Server key-value helpers */
 async function loadServerKey(keyName){
   const data = await serverFetchRoom();
-  return (data.server_storage && data.server_storage[keyName]) ? data.server_storage[keyName] : null;
+  return (data.server_storage && data.server_storage[keyName]) 
+    ? data.server_storage[keyName] 
+    : null;
 }
+
 async function saveServerKey(keyName, value){
   const data = await serverFetchRoom();
   data.server_storage = data.server_storage || {};
